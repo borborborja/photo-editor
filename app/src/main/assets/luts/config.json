@@ -301,6 +301,16 @@
       "path": "cinestill800t.33.plut",
       "category": "Film",
       "isVip": true
+    },
+    {
+      "id": "film_velvia_50",
+      "name": {
+        "en": "Velvia 50",
+        "zh": "Velvia 50"
+      },
+      "path": "velvia50.33.plut",
+      "category": "Film",
+      "isVip": false
     }
   ]
 }

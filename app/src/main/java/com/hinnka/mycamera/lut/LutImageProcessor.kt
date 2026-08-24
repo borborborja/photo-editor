@@ -403,7 +403,7 @@ class LutImageProcessor(context: Context? = null) {
 
         // 提取色彩配方参数
         val effectiveRecipeParams = colorRecipeParams?.let(ColorPaletteMapper::mergeIntoEffectiveParams)
-        val halation = 0f
+        val halation = effectiveRecipeParams?.halation ?: 0f
         val softLight = effectiveRecipeParams?.softLight ?: 0f
         val redHalation = effectiveRecipeParams?.redHalation ?: 0f
 
@@ -623,7 +623,7 @@ class LutImageProcessor(context: Context? = null) {
 
         // 提取色彩配方参数
         val effectiveRecipeParams = colorRecipeParams?.let(ColorPaletteMapper::mergeIntoEffectiveParams)
-        val halation = 0f
+        val halation = effectiveRecipeParams?.halation ?: 0f
         val softLight = effectiveRecipeParams?.softLight ?: 0f
         val redHalation = effectiveRecipeParams?.redHalation ?: 0f
 
@@ -1052,7 +1052,7 @@ class LutImageProcessor(context: Context? = null) {
         val bleachBypass = effectiveRecipeParams?.bleachBypass ?: 0f
         val clarity = effectiveRecipeParams?.clarity ?: 0f
         val bloom = effectiveRecipeParams?.bloom ?: 0f
-        val halation = 0f
+        val halation = effectiveRecipeParams?.halation ?: 0f
         val softLight = effectiveRecipeParams?.softLight ?: 0f
         val redHalation = effectiveRecipeParams?.redHalation ?: 0f
         val chromaticAberration = effectiveRecipeParams?.chromaticAberration ?: 0f

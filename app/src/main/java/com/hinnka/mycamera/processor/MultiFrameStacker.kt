@@ -41,7 +41,13 @@ enum class MgcRawMaxMode {
     }
 
     val outputMode: MgcSpatialOutputMode
-        get() = if (this == SPATIAL_BAYER) MgcSpatialOutputMode.BAYER else MgcSpatialOutputMode.RGB
+        get() = when (this) {
+            // Sabre keeps the native Bayer/CFA output path. Spatial RGB is the only
+            // RAWmax mode that materializes a camera-RGB merge before demosaic.
+            SABRE,
+            SPATIAL_BAYER -> MgcSpatialOutputMode.BAYER
+            SPATIAL_RGB -> MgcSpatialOutputMode.RGB
+        }
 
     val mergeMethod: MgcMergeMethod
         get() = when (this) {

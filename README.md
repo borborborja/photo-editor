@@ -1,57 +1,45 @@
-# Photon Camera
+# Photo Editor
 
-[English](./README.md) | [简体中文](./README_CN.md)
+Photo Editor és un editor de fotografies Android FOSS basat en el motor de
+[PhotonCamera](https://github.com/bjzhou/PhotonCamera), amb una interfície i un
+flux d’edició inspirats en Snapseed.
 
-[![Google Play](https://img.shields.io/badge/Google%20Play-Get%20it%20on-green?logo=google-play&logoColor=white)](https://play.google.com/store/apps/details?id=com.hinnka.mycamera)
+## Funcions
 
-Photon Camera is an open-source Android camera application focused on static photography, designed to simulate the handling and image quality of modern mirrorless digital cameras.
+- Ajustos de llum i color, detalls, corbes RGB, balanç de blancs i HSL.
+- Crop, gir, perspectiva, expand, selecció local, pinzell i healing.
+- Lens Blur, Vignette, Grain, Bloom, HDR Scape, Drama, Vintage, Retrolux,
+  Grunge, Noir, Black & White, Portrait, Face Enhance i Head Pose.
+- Text amb estils Plain, Bold, Outline, Neon, Stamp i Typewriter.
+- LUTs locals `.cube` i `.plut`, presets inclosos i importació de LUTs propis.
+- Edició no destructiva amb receptes, undo/redo, comparació abans/després,
+  exportació JPEG i compartir local.
 
-## 🌟 Key Features
+Totes les operacions de l’editor es processen al dispositiu. El flavor `default`
+és la distribució FOSS per a F-Droid i no inclou Google Play Services, Play
+Billing, Firebase, Bugly ni Crashlytics. Tampoc declara permisos de xarxa.
 
-### 1. Advanced LUT Support
-* **Multi-format Compatibility**: Supports importing and applying `.cube`, `.png` (Halfs/Fulls), and `.xmp` profile files.
-* **Real-time Preview**: High-performance shaders enable real-time LUT filtering with "What You See Is What You Get" (WYSIWYG).
-* **Custom Imports**: Easily import your own LUT libraries to create a unique color signature.
+## Compilar
 
-### 2. Deep Color Recipes
-A professional-grade color adjustment system allowing fine-tuning across multiple dimensions:
-* **Basic Adjustments**: Exposure, Contrast, Highlights, Shadows, Saturation, Temperature, Tint.
-* **Artistic Effects**: Color effects, Vignette, Grain, Fade, Bleach Bypass.
-* **Pro Filters**: Bloom, Dispersion, Noise, Low-pixel aesthetics.
+```sh
+./gradlew assembleDefaultRelease
+```
 
-### 3. Motion Photos
-* **Industry Unique**: The only open-source project providing multi-vendor adaptation (Xiaomi, Samsung, Pixel, etc.) for Motion Photos on Android.
-* **Dynamic Moments**: Capture short video clips alongside your still images.
+L’APK unsigned queda a:
 
-### 4. High-Speed Burst
-* **Performance Peak**: High-speed burst mode with no limit on the number of frames.
-* **LUT Integration**: Supports applying LUT filters in real-time during burst sequences.
+```text
+app/build/outputs/apk/default/release/app-default-release-unsigned.apk
+```
 
-### 5. Multi-frame Synthesis & Super Resolution
-* **Quality Enhancement**: Enhances image quality through advanced multi-frame stacking.
-* **Noise Reduction**: Provides effective noise reduction while focusing on preserving natural details.
+El workflow de [GitHub Actions](.github/workflows/android-build.yml) executa
+els tests de l’editor i els parsers LUT, compila l’APK FOSS i publica un
+GitHub Release automàtic per cada tag `v*`.
 
-### 6. Large Aperture Bokeh
-* **AI-Driven**: Integrates the **midas-v2** depth detection local AI model, optimized for Qualcomm chips.
-* **Precise Depth**: Offers accurate depth sensing for natural background blur transitions (ongoing refinements).
+Consulta [FOSS_BUILD.md](FOSS_BUILD.md) per als detalls de la compilació,
+l’auditoria de permisos i les notes de reproductibilitat.
 
-### 7. Phantom Mode
-* **Raw Quality**: Directly bridges with the system camera for image capture while applying Photon Camera's LUT engine. This bypasses the typical "bad image quality" and "over-sharpening" issues found in standard third-party camera APIs.
+## Llicència
 
-### 8. AI Color Simulation
-* **Smart Stylization**: Utilizes **Google Nano Banana 2** technology to analyze reference photos, restore original colors, and extract color profiles to generate custom LUTs.
-
-## 🛠️ Technology Stack
-* **UI**: Jetpack Compose
-* **Camera API**: Camera2 API
-* **Min SDK**: Android 11+ (minSdk 30)
-
-## 🤝 Contribution & Feedback
-Contributions of any kind are welcome! If you have questions or suggestions, please open an Issue.
-
-## 📄 License
-Except for third-party components, models, fonts, LUTs, and other assets that carry their own license notices in this repository, Photon Camera source code is licensed under the [Apache License 2.0](./LICENSE).
-
-## Contact
-
-Telegram: https://t.me/photoncameraapp
+El codi de Photo Editor es distribueix sota [Apache License 2.0](LICENSE),
+subjecte a les llicències dels components, models, fonts i LUTs de tercers
+incloses al repositori.

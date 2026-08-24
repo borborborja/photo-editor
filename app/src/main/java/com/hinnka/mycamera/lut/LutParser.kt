@@ -16,6 +16,9 @@ import java.nio.ByteOrder
 object LutParser {
     private const val TAG = "LutParser"
     private const val MAGIC_PLUT = 0x54554C50 // 'PLUT' in Little Endian
+    private const val PLUT_BASE_HEADER_BYTES = 16
+    private const val MAX_PLUT_DIMENSION = 256
+    private const val MAX_PLUT_PAYLOAD_BYTES = 64 * 1024 * 1024
 
     /**
      * 解析 LUT 文件（自动识别格式）
@@ -44,45 +47,62 @@ object LutParser {
      * 解析二进制 .plut 格式
      */
     private fun parseBinary(inputStream: InputStream, title: String): LutConfig {
-        val fullData = inputStream.readBytes()
-        val buffer = ByteBuffer.wrap(fullData).order(ByteOrder.LITTLE_ENDIAN)
-
-        val magic = buffer.int // Skip magic
-        val version = buffer.int
-        val size = buffer.int
-        val dataType = buffer.int
-        val curveStorageId = if (version >= 2) buffer.int else TransferCurve.SRGB.storageId
+        val baseHeader = ByteArray(PLUT_BASE_HEADER_BYTES)
+        readFully(inputStream, baseHeader, "PLUT header")
+        val base = ByteBuffer.wrap(baseHeader).order(ByteOrder.LITTLE_ENDIAN)
+        val magic = base.int
+        val version = base.int
+        val size = base.int
+        val dataType = base.int
+        require(magic == MAGIC_PLUT) { "Invalid PLUT magic" }
+        require(version in 1..3) { "Unsupported PLUT version: $version" }
+        // A 256³ LUT is already a large offline asset; rejecting larger values prevents a
+        // malformed import from overflowing the size calculation or exhausting heap memory.
+        require(size in 2..MAX_PLUT_DIMENSION) { "Unsupported PLUT dimension: $size" }
+        require(dataType == 0 || dataType == 1) { "Unsupported data type: $dataType" }
+        val optionalHeaderBytes = (if (version >= 2) 4 else 0) + (if (version >= 3) 4 else 0)
+        val metadata = ByteArray(optionalHeaderBytes)
+        readFully(inputStream, metadata, "PLUT metadata")
+        val metadataBuffer = ByteBuffer.wrap(metadata).order(ByteOrder.LITTLE_ENDIAN)
+        val curveStorageId = if (version >= 2) metadataBuffer.int else TransferCurve.SRGB.storageId
         val curve = TransferCurve.fromStorageId(curveStorageId)
-        
-        val colorSpaceOrdinal = if (version >= 3) buffer.int else ColorSpace.SRGB.ordinal
+
+        val colorSpaceOrdinal = if (version >= 3) metadataBuffer.int else ColorSpace.SRGB.ordinal
         val colorSpace = ColorSpace.entries.getOrElse(colorSpaceOrdinal) { ColorSpace.SRGB }
 
-        val count = size * size * size * 3
+        val count = size.toLong() * size.toLong() * size.toLong() * 3L
         val bytesPerComponent = if (dataType == 1) 2 else 1
-        val expectedSize = count * bytesPerComponent
+        val expectedPayloadSize = count * bytesPerComponent.toLong()
+        require(expectedPayloadSize <= MAX_PLUT_PAYLOAD_BYTES) { "PLUT payload is too large" }
+        val data = ByteArray(expectedPayloadSize.toInt())
+        readFully(inputStream, data, "PLUT payload")
+        require(inputStream.read() == -1) { "PLUT contains trailing bytes" }
 
         //dataType 0 = UINT8, 1 = UINT16 (新支持), 2 = FLOAT32 (未来扩展)
-        if (dataType == 0 || dataType == 1) {
-            val directBuffer = ByteBuffer.allocateDirect(expectedSize)
-                .order(ByteOrder.nativeOrder())
+        val expectedSize = expectedPayloadSize.toInt()
+        val directBuffer = ByteBuffer.allocateDirect(expectedSize)
+            .order(ByteOrder.nativeOrder())
 
-            // 将数据拷贝到 DirectByteBuffer 以便 OpenGL 使用
-            val data = ByteArray(expectedSize)
-            buffer.get(data)
-            directBuffer.put(data)
-            directBuffer.position(0)
+        // 将数据拷贝到 DirectByteBuffer 以便 OpenGL 使用
+        directBuffer.put(data)
+        directBuffer.position(0)
 
-            return LutConfig(
-                size = size,
-                byteBuffer = directBuffer,
-                title = title,
-                configDataType = if (dataType == 1) LutConfig.CONFIG_DATA_TYPE_UINT16 else LutConfig.CONFIG_DATA_TYPE_UINT8,
-                curve = curve,
-                colorSpace = colorSpace
-            )
-        } else {
-            // 未来可以支持 Float32
-            throw UnsupportedOperationException("Unsupported data type: $dataType")
+        return LutConfig(
+            size = size,
+            byteBuffer = directBuffer,
+            title = title,
+            configDataType = if (dataType == 1) LutConfig.CONFIG_DATA_TYPE_UINT16 else LutConfig.CONFIG_DATA_TYPE_UINT8,
+            curve = curve,
+            colorSpace = colorSpace
+        )
+    }
+
+    private fun readFully(input: InputStream, target: ByteArray, label: String) {
+        var offset = 0
+        while (offset < target.size) {
+            val count = input.read(target, offset, target.size - offset)
+            require(count > 0) { "Truncated $label" }
+            offset += count
         }
     }
 

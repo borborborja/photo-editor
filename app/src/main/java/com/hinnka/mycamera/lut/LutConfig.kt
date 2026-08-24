@@ -91,9 +91,12 @@ data class LutConfig(
      * 验证 LUT 数据是否有效
      */
     fun isValid(): Boolean {
-        val count = size * size * size * 3
-        val expectedCapacity = if (configDataType == CONFIG_DATA_TYPE_UINT16) count * 2 else count
-        return size > 0 && (data?.size == count || byteBuffer?.capacity() == expectedCapacity)
+        if (size <= 0) return false
+        val count = size.toLong() * size.toLong() * size.toLong() * 3L
+        if (count > Int.MAX_VALUE) return false
+        val expectedCapacity = if (configDataType == CONFIG_DATA_TYPE_UINT16) count * 2L else count
+        if (expectedCapacity > Int.MAX_VALUE) return false
+        return data?.size == count.toInt() || byteBuffer?.capacity() == expectedCapacity.toInt()
     }
 }
 

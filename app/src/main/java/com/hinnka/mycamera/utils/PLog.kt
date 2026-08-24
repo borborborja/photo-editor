@@ -54,7 +54,7 @@ object PLog {
      */
     fun v(tag: String, message: String) {
         addLog(LogLevel.VERBOSE, tag, message)
-        Log.v("PLog_$tag", message)
+        safePlatformLog { Log.v("PLog_$tag", message) }
     }
 
     /**
@@ -62,7 +62,7 @@ object PLog {
      */
     fun d(tag: String, message: String) {
         addLog(LogLevel.DEBUG, tag, message)
-        Log.d("PLog_$tag", message)
+        safePlatformLog { Log.d("PLog_$tag", message) }
     }
 
     /**
@@ -70,7 +70,7 @@ object PLog {
      */
     fun i(tag: String, message: String) {
         addLog(LogLevel.INFO, tag, message)
-        Log.i("PLog_$tag", message)
+        safePlatformLog { Log.i("PLog_$tag", message) }
     }
 
     /**
@@ -79,9 +79,9 @@ object PLog {
     fun w(tag: String, message: String, throwable: Throwable? = null) {
         addLog(LogLevel.WARNING, tag, message, throwable)
         if (throwable != null) {
-            Log.w("PLog_$tag", message, throwable)
+            safePlatformLog { Log.w("PLog_$tag", message, throwable) }
         } else {
-            Log.w("PLog_$tag", message)
+            safePlatformLog { Log.w("PLog_$tag", message) }
         }
     }
 
@@ -92,10 +92,18 @@ object PLog {
         addLog(LogLevel.ERROR, tag, message, throwable)
         if (throwable != null) {
             BuglyHelper.error(Throwable("$tag: $message", throwable))
-            Log.e("PLog_$tag", message, throwable)
+            safePlatformLog { Log.e("PLog_$tag", message, throwable) }
         } else {
-            Log.e("PLog_$tag", message)
+            safePlatformLog { Log.e("PLog_$tag", message) }
         }
+    }
+
+    /**
+     * Android's `Log` methods are intentionally unavailable in the plain JVM test runtime.
+     * Keep the in-memory log entry even there, while preserving platform logging on device.
+     */
+    private inline fun safePlatformLog(block: () -> Unit) {
+        runCatching(block)
     }
 
     /**

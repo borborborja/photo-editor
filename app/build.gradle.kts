@@ -23,7 +23,7 @@ android {
     ndkVersion = "29.0.14206865"
 
     defaultConfig {
-        applicationId = "com.hinnka.mycamera"
+        applicationId = "org.foss.photoeditor"
         minSdk = 30
         targetSdk = 36
         versionCode = 148
@@ -49,7 +49,7 @@ android {
         buildConfigField(
             "String",
             "BUILT_IN_API_KEY",
-            localProperties.getProperty("BUILT_IN_API_KEY_GOOGLE", "").toBuildConfigString()
+            localProperties.getProperty("BUILT_IN_API_KEY", "").toBuildConfigString()
         )
     }
 
@@ -80,15 +80,16 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            signingConfig = signingConfigs.getByName("release")
+            // F-Droid signs the reproducible release build itself. Only use a
+            // local signing key when one is explicitly supplied.
+            if (project.findProperty("RELEASE_STORE_FILE") != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 
     flavorDimensions += "channel"
     productFlavors {
-        create("google") {
-            dimension = "channel"
-        }
         create("default") {
             dimension = "channel"
         }
@@ -184,15 +185,6 @@ dependencies {
 
     implementation(libs.okhttp)
     implementation(libs.gson)
-
-    // Bugly for default flavor
-    "defaultImplementation"("com.tencent.bugly:crashreport:latest.release")
-    "samsungImplementation"("com.tencent.bugly:crashreport:latest.release")
-    "meituImplementation"("com.tencent.bugly:crashreport:latest.release")
-
-    // Billing for google flavor
-    "googleImplementation"(libs.google.billing)
-    "googleImplementation"(libs.google.billing.ktx)
 
     // Reorderable for drag-and-drop list reordering
     implementation("sh.calvin.reorderable:reorderable:2.4.3")
