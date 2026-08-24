@@ -103,5 +103,5 @@ jobs:
         with:
           generate_release_notes: true
           files: |
-            dist/app-default-release-unsigned.apk
-            dist/app-default-preview.apk
+            dist/release/app-default-release-unsigned.apk
+            dist/preview/app-default-preview.apk
