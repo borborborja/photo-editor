@@ -23,17 +23,21 @@ Billing, Firebase, Bugly ni Crashlytics. Tampoc declara permisos de xarxa.
 
 ```sh
 ./gradlew assembleDefaultRelease
+./gradlew :app:assembleDefaultPreview
 ```
 
 L’APK unsigned queda a:
 
 ```text
 app/build/outputs/apk/default/release/app-default-release-unsigned.apk
+app/build/outputs/apk/default/preview/app-default-preview.apk
 ```
 
 El workflow de [GitHub Actions](.github/workflows/android-build.yml) executa
 els tests de l’editor i els parsers LUT, compila l’APK FOSS i publica un
-GitHub Release automàtic per cada tag `v*`.
+GitHub Release automàtic per cada tag `v*`. L’APK `preview` es pot instal·lar
+directament per provar l’app; l’APK `unsigned` és el paquet que ha de signar
+F-Droid.
 
 Consulta [FOSS_BUILD.md](FOSS_BUILD.md) per als detalls de la compilació,
 l’auditoria de permisos i les notes de reproductibilitat.

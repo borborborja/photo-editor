@@ -54,13 +54,21 @@ jobs:
       - name: Build unsigned F-Droid APK
         run: ./gradlew --no-daemon :app:assembleDefaultRelease
 
+      - name: Build installable preview APK
+        run: ./gradlew --no-daemon :app:assembleDefaultPreview
+
       - name: Verify APK identity and permissions
         env:
           APK: app/build/outputs/apk/default/release/app-default-release-unsigned.apk
+          PREVIEW_APK: app/build/outputs/apk/default/preview/app-default-preview.apk
         run: |
           AAPT="$ANDROID_HOME/build-tools/36.0.0/aapt"
+          APKSIGNER="$ANDROID_HOME/build-tools/36.0.0/apksigner"
           test -s "$APK"
+          test -s "$PREVIEW_APK"
           "$AAPT" dump badging "$APK" | grep -F "package: name='org.foss.photoeditor'"
+          "$AAPT" dump badging "$PREVIEW_APK" | grep -F "package: name='org.foss.photoeditor'"
+          "$APKSIGNER" verify --verbose "$PREVIEW_APK"
           ! "$AAPT" dump permissions "$APK" | grep -E \
             'android.permission.(INTERNET|ACCESS_NETWORK_STATE|READ_PHONE_STATE)'
           ! unzip -l "$APK" | grep -E \
@@ -70,7 +78,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: photo-editor-foss-${{ github.sha }}
-          path: app/build/outputs/apk/default/release/app-default-release-unsigned.apk
+          path: |
+            app/build/outputs/apk/default/release/app-default-release-unsigned.apk
+            app/build/outputs/apk/default/preview/app-default-preview.apk
           if-no-files-found: error
           retention-days: 30
 
@@ -92,4 +102,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: dist/app-default-release-unsigned.apk
+          files: |
+            dist/app-default-release-unsigned.apk
+            dist/app-default-preview.apk

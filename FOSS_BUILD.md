@@ -11,7 +11,9 @@ service during startup.
 
 The generated F-Droid input APK is
 `app/build/outputs/apk/default/release/app-default-release-unsigned.apk`
-(`org.foss.photoeditor`).
+(`org.foss.photoeditor`). The GitHub Release also includes
+`app-default-preview.apk`, a directly installable preview signed with the
+project debug key for testing; F-Droid should use the unsigned artifact.
 
 The editor works offline with local photos, all bundled LUT presets, imported `.cube`
 and `.plut` LUTs, and the PhotonCamera rendering pipeline. Network-backed AI
@@ -38,6 +40,6 @@ use deterministic offline image operations and never upload a photo.
 
 Verification performed locally:
 
-* `./gradlew assembleDefaultRelease` succeeds and produces the unsigned APK above.
+* `./gradlew assembleDefaultRelease` and `./gradlew :app:assembleDefaultPreview` succeed. The preview APK is installable directly; the unsigned release APK is the F-Droid input.
 * Focused editor and LUT parser tests pass; the full suite executes 477 tests with 5 skipped and 2 known upstream RAW reference failures. `DngPhotonPercentileTest` and `DngProfileToneCurveTest` remain red because the upstream Photon PGTM implementation currently differs from their older numeric fixtures; they are unrelated to the Photo Editor recipe/editor code.
 * The release manifest contains no `INTERNET`, `ACCESS_NETWORK_STATE`, `READ_PHONE_STATE`, or billing permission, and the APK contains no Play Services, Firebase, Bugly, Crashlytics, or Play Billing classes.
