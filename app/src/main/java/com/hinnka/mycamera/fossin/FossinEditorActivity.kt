@@ -13,9 +13,11 @@ import android.os.Bundle
 import android.provider.OpenableColumns
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.Canvas as ComposeCanvas
@@ -32,7 +34,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -81,8 +86,10 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import com.hinnka.mycamera.MainActivity
 import com.hinnka.mycamera.R
 import com.hinnka.mycamera.lut.LutConfig
@@ -103,7 +110,12 @@ import kotlin.math.roundToInt
 
 class FossinEditorActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
+        installSplashScreen()
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+        )
         setContent {
             PhotonCameraTheme {
                 FossinEditor(
@@ -954,7 +966,7 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
     BackHandler { onFinish() }
     val currentEditState by rememberUpdatedState(editState)
     val image = if (showOriginal || (tool == EditorTool.Crop && editState.cropMode == CropMode.Free)) source else rendered ?: source
-    Surface(Modifier.fillMaxSize().navigationBarsPadding(), color = Color(0xFF0B0B0C)) {
+    Surface(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(), color = Color(0xFF0B0B0C)) {
         Column(Modifier.fillMaxSize()) {
             EditorTopBar(
                 hasImage = source != null,
@@ -1183,29 +1195,74 @@ private fun EditorTopBar(
     onReset: () -> Unit,
     onToggleOriginal: () -> Unit,
 ) {
-    Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-        IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back), tint = Color.White) }
-        Column(Modifier.weight(1f)) {
-            Text(text = stringResource(R.string.app_name), color = Color.White, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
-            Text(stringResource(R.string.fossin_subtitle), color = Color(0xFF9B9BA1), fontSize = 11.sp)
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onBack) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back), tint = Color.White)
+            }
+            Column(
+                Modifier
+                    .weight(1f)
+                    .padding(start = 4.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.app_name),
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = stringResource(R.string.fossin_subtitle),
+                    color = Color(0xFF9B9BA1),
+                    fontSize = 11.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
-        IconButton(onClick = onUndo, enabled = canUndo) {
-            Icon(AppIcons.AutoMirroredOutlinedUndo, stringResource(R.string.fossin_undo), tint = if (canUndo) Color.White else Color(0xFF55555A))
+
+        // Keep the action targets at a usable touch size. On narrow phones the
+        // row can scroll instead of squeezing the title into one letter per line.
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onUndo, enabled = canUndo) {
+                Icon(AppIcons.AutoMirroredOutlinedUndo, stringResource(R.string.fossin_undo), tint = if (canUndo) Color.White else Color(0xFF55555A))
+            }
+            IconButton(onClick = onRedo, enabled = canRedo) {
+                Icon(AppIcons.AutoMirroredOutlinedUndo, stringResource(R.string.fossin_redo), tint = if (canRedo) Color.White else Color(0xFF55555A), modifier = Modifier.rotate(180f))
+            }
+            IconButton(onClick = onToggleOriginal, enabled = hasImage) {
+                Icon(if (showingOriginal) AppIcons.VisibilityOff else AppIcons.Visibility, stringResource(R.string.fossin_compare), tint = if (hasImage) Color.White else Color(0xFF55555A))
+            }
+            IconButton(onClick = onReset, enabled = hasImage) {
+                Icon(AppIcons.RestartAlt, stringResource(R.string.fossin_reset), tint = if (hasImage) Color.White else Color(0xFF55555A))
+            }
+            IconButton(onClick = onImport) {
+                Icon(AppIcons.AddPhotoAlternate, stringResource(R.string.fossin_import), tint = Color.White)
+            }
+            IconButton(onClick = onShare, enabled = hasImage) {
+                Icon(Icons.Default.Share, stringResource(R.string.share), tint = if (hasImage) Color.White else Color(0xFF55555A))
+            }
+            IconButton(onClick = onExport, enabled = hasImage) {
+                Icon(AppIcons.Download, stringResource(R.string.fossin_export), tint = if (hasImage) Color.White else Color(0xFF55555A))
+            }
         }
-        IconButton(onClick = onRedo, enabled = canRedo) {
-            Icon(AppIcons.AutoMirroredOutlinedUndo, stringResource(R.string.fossin_redo), tint = if (canRedo) Color.White else Color(0xFF55555A), modifier = Modifier.rotate(180f))
-        }
-        IconButton(onClick = onToggleOriginal, enabled = hasImage) {
-            Icon(if (showingOriginal) AppIcons.VisibilityOff else AppIcons.Visibility, stringResource(R.string.fossin_compare), tint = if (hasImage) Color.White else Color(0xFF55555A))
-        }
-        IconButton(onClick = onReset, enabled = hasImage) {
-            Icon(AppIcons.RestartAlt, stringResource(R.string.fossin_reset), tint = if (hasImage) Color.White else Color(0xFF55555A))
-        }
-        IconButton(onClick = onImport) { Icon(AppIcons.AddPhotoAlternate, stringResource(R.string.fossin_import), tint = Color.White) }
-        IconButton(onClick = onShare, enabled = hasImage) {
-            Icon(Icons.Default.Share, stringResource(R.string.share), tint = if (hasImage) Color.White else Color(0xFF55555A))
-        }
-        IconButton(onClick = onExport, enabled = hasImage) { Icon(AppIcons.Download, stringResource(R.string.fossin_export), tint = if (hasImage) Color.White else Color(0xFF55555A)) }
     }
 }
 
