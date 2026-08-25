@@ -179,18 +179,12 @@ private val CUBE_IMPORT_MIME_TYPES = setOf(
 private const val CAMERA_REVIEW_ACTION = "com.android.camera.action.REVIEW"
 private const val PROVIDER_REVIEW_ACTION = "android.provider.action.REVIEW"
 private const val PROVIDER_REVIEW_SECURE_ACTION = "android.provider.action.REVIEW_SECURE"
-private const val PHOTOS_SECURE_REVIEW_ACTION = "com.google.android.apps.photos.action.SECURE_REVIEW"
-private const val PHOTOS_MARS_REVIEW_ACTION = "com.google.android.apps.photos.mars.api.ACTION_REVIEW"
-private const val PHOTOS_MARS_REVIEW_SECURE_ACTION = "com.google.android.apps.photos.mars.api.ACTION_REVIEW_SECURE"
 private const val MEDIASTORE_AUTHORITY = "media"
 
 private val EXTERNAL_GALLERY_REVIEW_ACTIONS = setOf(
     CAMERA_REVIEW_ACTION,
     PROVIDER_REVIEW_ACTION,
-    PROVIDER_REVIEW_SECURE_ACTION,
-    PHOTOS_SECURE_REVIEW_ACTION,
-    PHOTOS_MARS_REVIEW_ACTION,
-    PHOTOS_MARS_REVIEW_SECURE_ACTION
+    PROVIDER_REVIEW_SECURE_ACTION
 )
 
 class MainActivity : ComponentActivity() {
@@ -683,6 +677,9 @@ fun NavigationHost(
                 val experienceOnboardingComplete by cameraViewModel
                     .isCameraExperienceOnboardingComplete
                     .collectAsState()
+                val canChangeCameraExperience by cameraViewModel
+                    .canChangeCameraExperience
+                    .collectAsState()
 
                 when {
                     !experienceOnboardingComplete -> CameraExperienceWizard(
@@ -703,10 +700,10 @@ fun NavigationHost(
                                 navController.navigate(Routes.GALLERY)
                             }
                         },
-                        onSettingsClick = { navController.navigate(Routes.SETTINGS) },
                         onSwitchToPro = {
                             cameraViewModel.selectCameraExperience(CameraExperience.PRO)
                         },
+                        canSwitchToPro = canChangeCameraExperience,
                     )
 
                     else -> Box(Modifier.fillMaxSize()) {
@@ -792,6 +789,7 @@ fun NavigationHost(
                             onSwitchToBeginner = {
                                 cameraViewModel.selectCameraExperience(CameraExperience.BEGINNER)
                             },
+                            enabled = canChangeCameraExperience,
                             modifier = Modifier
                                 .align(Alignment.TopStart)
                                 .padding(start = 12.dp, top = 98.dp),

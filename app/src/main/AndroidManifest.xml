@@ -162,23 +162,6 @@
                 <action android:name="com.android.camera.action.REVIEW" />
                 <action android:name="android.provider.action.REVIEW" />
                 <action android:name="android.provider.action.REVIEW_SECURE" />
-                <action android:name="com.google.android.apps.photos.action.SECURE_REVIEW" />
-                <action android:name="com.google.android.apps.photos.mars.api.ACTION_REVIEW" />
-                <action android:name="com.google.android.apps.photos.mars.api.ACTION_REVIEW_SECURE" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <data
-                        android:scheme="content"
-                        android:host="com.google.android.libraries.photos.api.mars"
-                        android:pathPrefix="/file" />
-            </intent-filter>
-
-            <intent-filter>
-                <action android:name="com.android.camera.action.REVIEW" />
-                <action android:name="android.provider.action.REVIEW" />
-                <action android:name="android.provider.action.REVIEW_SECURE" />
-                <action android:name="com.google.android.apps.photos.action.SECURE_REVIEW" />
-                <action android:name="com.google.android.apps.photos.mars.api.ACTION_REVIEW" />
-                <action android:name="com.google.android.apps.photos.mars.api.ACTION_REVIEW_SECURE" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:scheme="content" />
             </intent-filter>
@@ -187,9 +170,6 @@
                 <action android:name="com.android.camera.action.REVIEW" />
                 <action android:name="android.provider.action.REVIEW" />
                 <action android:name="android.provider.action.REVIEW_SECURE" />
-                <action android:name="com.google.android.apps.photos.action.SECURE_REVIEW" />
-                <action android:name="com.google.android.apps.photos.mars.api.ACTION_REVIEW" />
-                <action android:name="com.google.android.apps.photos.mars.api.ACTION_REVIEW_SECURE" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:scheme="content" />
                 <data android:mimeType="image/*" />

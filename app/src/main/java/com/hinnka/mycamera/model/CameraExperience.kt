@@ -2,8 +2,8 @@ package com.hinnka.mycamera.model
 
 /**
  * The camera surface is deliberately split into two experiences.  Both use the
- * same Camera2 pipeline, so choosing the simpler UI never means accepting a
- * slower or lower-quality capture path.
+ * same Camera2 pipeline. The beginner surface deliberately uses its
+ * single-frame JPEG path, while Pro keeps access to every capture option.
  */
 enum class CameraExperience {
     BEGINNER,
@@ -15,6 +15,12 @@ enum class CameraExperience {
         }
     }
 }
+
+/** A camera surface must not be replaced while its video recorder owns it. */
+fun canChangeCameraExperience(
+    isVideoRecording: Boolean,
+    isVideoProcessing: Boolean,
+): Boolean = !isVideoRecording && !isVideoProcessing
 
 /**
  * Small, built-in looks for the beginner camera.  They are color recipes, not

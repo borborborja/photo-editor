@@ -73,6 +73,10 @@ jobs:
             'android.permission.(INTERNET|ACCESS_NETWORK_STATE|READ_PHONE_STATE)'
           ! unzip -l "$APK" | grep -E \
             'billingclient|play/services|firebase|bugly|crashlytics|com/google/android/gms|com/google/android/play'
+          ! "$AAPT" dump xmltree "$APK" AndroidManifest.xml | grep -E \
+            'com\.google\.android\.(apps\.photos|libraries\.photos)'
+          ! "$AAPT" dump xmltree "$PREVIEW_APK" AndroidManifest.xml | grep -E \
+            'com\.google\.android\.(apps\.photos|libraries\.photos)'
 
       - name: Upload unsigned APK
         uses: actions/upload-artifact@v4

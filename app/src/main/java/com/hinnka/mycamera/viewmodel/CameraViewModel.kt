@@ -45,6 +45,7 @@ import com.hinnka.mycamera.lut.creator.OpenAIApiClient
 import com.hinnka.mycamera.model.CameraPreset
 import com.hinnka.mycamera.model.BeginnerSimulation
 import com.hinnka.mycamera.model.CameraExperience
+import com.hinnka.mycamera.model.canChangeCameraExperience
 import com.hinnka.mycamera.model.ColorRecipeParams
 import com.hinnka.mycamera.model.LutSelectorMode
 import com.hinnka.mycamera.model.SafeImage
@@ -144,6 +145,7 @@ private fun sanitizeViewModelTonemapMode(mode: String): String {
 }
 
 private fun resolvePreviewBaselineTarget(prefs: UserPreferences): BaselineColorCorrectionTarget? {
+    if (prefs.cameraExperience == CameraExperience.BEGINNER) return null
     return when {
         prefs.useRaw && prefs.naturalLightEnabled -> BaselineColorCorrectionTarget.RAW
         prefs.useRaw -> null
@@ -576,8 +578,13 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         private set
 
     @OptIn(ExperimentalCoroutinesApi::class)
-    val currentRecipeParams: StateFlow<ColorRecipeParams> = currentLutId.flatMapLatest { id ->
-        contentRepository.lutManager.getColorRecipeParams(id)
+    private val beginnerRecipeOverride = MutableStateFlow<ColorRecipeParams?>(null)
+
+    val currentRecipeParams: StateFlow<ColorRecipeParams> = combine(
+        currentLutId.flatMapLatest { id -> contentRepository.lutManager.getColorRecipeParams(id) },
+        beginnerRecipeOverride,
+    ) { storedRecipe, beginnerRecipe ->
+        beginnerRecipe ?: storedRecipe
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.Eagerly,
@@ -591,6 +598,15 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     val cameraExperience: StateFlow<CameraExperience> = userPreferencesRepository.userPreferences
         .map { it.cameraExperience }
         .stateIn(viewModelScope, SharingStarted.Eagerly, CameraExperience.BEGINNER)
+
+    val canChangeCameraExperience: StateFlow<Boolean> = state
+        .map { cameraState ->
+            canChangeCameraExperience(
+                isVideoRecording = cameraState.videoRecordingState.isRecording,
+                isVideoProcessing = cameraState.videoRecordingState.isProcessing,
+            )
+        }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
 
     val isCameraExperienceOnboardingComplete: StateFlow<Boolean> =
         userPreferencesRepository.userPreferences
@@ -741,8 +757,11 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
      */
     fun selectCameraExperience(experience: CameraExperience) {
         viewModelScope.launch {
+            if (!canChangeCameraExperience.value) return@launch
             if (experience == CameraExperience.BEGINNER) {
                 applyBeginnerCameraDefaults()
+            } else {
+                restoreProCameraExperience()
             }
             userPreferencesRepository.saveCameraExperience(experience)
         }
@@ -758,48 +777,46 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     /** Applies a built-in colour recipe; the selected look never loads a LUT. */
     fun selectBeginnerSimulation(simulation: BeginnerSimulation) {
         viewModelScope.launch {
-            applyCameraFeatureUpdate(
-                CameraFeatureUpdate(
-                    lutId = SettingValue(null),
-                    colorRecipe = SettingValue(simulation.recipe),
-                    effects = SettingValue(EffectParams.DEFAULT),
-                    useRaw = SettingValue(false),
-                    useJpgMax = SettingValue(false),
-                    useRawMax = SettingValue(false),
-                    useMultipleExposure = SettingValue(false),
-                )
-            )
+            if (cameraExperience.value != CameraExperience.BEGINNER) return@launch
+            beginnerRecipeOverride.value = simulation.recipe
+            applyLut("none")
             cameraController.setTimerSeconds(0)
             cameraController.setUseLivePhoto(false)
-            userPreferencesRepository.saveUseLivePhoto(false)
             userPreferencesRepository.saveBeginnerSimulation(simulation)
         }
     }
 
     private suspend fun applyBeginnerCameraDefaults() {
+        if (!canChangeCameraExperience.value) return
+        val prefs = userPreferencesRepository.userPreferences.first()
+        beginnerRecipeOverride.value = prefs.beginnerSimulation.recipe
         if (state.value.captureMode != CaptureMode.PHOTO) {
             cameraController.setCaptureMode(CaptureMode.PHOTO)
             currentSurfaceTexture = null
             cameraController.closeCamera()
-            userPreferencesRepository.saveCaptureMode(CaptureMode.PHOTO)
         }
-
-        applyCameraFeatureUpdate(
-            CameraFeatureUpdate(
-                lutId = SettingValue(null),
-                colorRecipe = SettingValue(
-                    userPreferencesRepository.userPreferences.first().beginnerSimulation.recipe
-                ),
-                effects = SettingValue(EffectParams.DEFAULT),
-                useRaw = SettingValue(false),
-                useJpgMax = SettingValue(false),
-                useRawMax = SettingValue(false),
-                useMultipleExposure = SettingValue(false),
-            )
-        )
+        applyLut("none")
+        currentFrameId = null
+        applyDefaultVirtualAperture(0f)
         cameraController.setTimerSeconds(0)
         cameraController.setUseLivePhoto(false)
-        userPreferencesRepository.saveUseLivePhoto(false)
+        cameraController.setApplyUltraHDR(false)
+        cameraController.setUseP010(false)
+        cameraController.setUseHlg10(false)
+        cameraController.setUseP3ColorSpace(false)
+    }
+
+    private suspend fun restoreProCameraExperience() {
+        val prefs = userPreferencesRepository.userPreferences.first()
+        beginnerRecipeOverride.value = null
+        if (state.value.captureMode != prefs.captureMode) {
+            cameraController.setCaptureMode(prefs.captureMode)
+            currentSurfaceTexture = null
+            cameraController.closeCamera()
+        }
+        currentFrameId = prefs.frameId
+        applyDefaultVirtualAperture(prefs.defaultVirtualAperture)
+        resolveLutIdForMode(prefs, prefs.captureMode)?.let(::applyLut)
     }
 
     fun applyPreset(preset: com.hinnka.mycamera.model.CameraPreset?) {
@@ -1156,6 +1173,9 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private fun metadataTonemapMode(prefs: UserPreferences?): String {
+        if (prefs?.cameraExperience == CameraExperience.BEGINNER) {
+            return TONEMAP_MODE_SYSTEM_DEFAULT
+        }
         return if (prefs?.naturalLightEnabled == true) {
             TONEMAP_MODE_NATURAL_LIGHT
         } else {
@@ -1503,7 +1523,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         .map { it.nrLevel }
         .stateIn(viewModelScope, SharingStarted.Eagerly, 5)
     val useRaw: StateFlow<Boolean> = userPreferencesRepository.userPreferences
-        .map { it.useRaw }
+        .map { it.useRaw && it.cameraExperience != CameraExperience.BEGINNER }
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
     val edgeLevel: StateFlow<Int> = userPreferencesRepository.userPreferences
         .map { it.edgeLevel }
@@ -1573,8 +1593,10 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         }
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
     val photoQuality: Flow<Int> = userPreferencesRepository.userPreferences.map { it.photoQuality }
-    val useHeicExport: Flow<Boolean> = userPreferencesRepository.userPreferences.map { it.useHeicExport }
-    val useJpeg444Export: Flow<Boolean> = userPreferencesRepository.userPreferences.map { it.useJpeg444Export }
+    val useHeicExport: Flow<Boolean> = userPreferencesRepository.userPreferences
+        .map { it.useHeicExport && it.cameraExperience != CameraExperience.BEGINNER }
+    val useJpeg444Export: Flow<Boolean> = userPreferencesRepository.userPreferences
+        .map { it.useJpeg444Export && it.cameraExperience != CameraExperience.BEGINNER }
 
     val defaultFocalLength: Flow<Float> = userPreferencesRepository.userPreferences.map { it.defaultFocalLength }
     val zoomDisplayMode: StateFlow<ZoomDisplayMode> = userPreferencesRepository.userPreferences
@@ -1730,13 +1752,13 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     var availableRawNoiseProfiles: List<RawNoiseProfileInfo> by mutableStateOf(emptyList())
         private set
     val useJpgMax: StateFlow<Boolean> = userPreferencesRepository.userPreferences
-        .map { it.useJpgMax }
+        .map { it.useJpgMax && it.cameraExperience != CameraExperience.BEGINNER }
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
     val useJpgMaxHdrComposition: StateFlow<Boolean> = userPreferencesRepository.userPreferences
         .map { it.useJpgMaxHdrComposition }
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
     val useMultipleExposure: StateFlow<Boolean> = userPreferencesRepository.userPreferences
-        .map { it.useMultipleExposure }
+        .map { it.useMultipleExposure && it.cameraExperience != CameraExperience.BEGINNER }
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
     val multipleExposureCount: StateFlow<Int> = userPreferencesRepository.userPreferences
         .map { it.multipleExposureCount }
@@ -1745,7 +1767,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         .map { it.multiFrameCount }
         .stateIn(viewModelScope, SharingStarted.Eagerly, MultiFrameConfig.DEFAULT_FRAME_COUNT)
     val useRawMax: StateFlow<Boolean> = userPreferencesRepository.userPreferences
-        .map { it.useRawMax }
+        .map { it.useRawMax && it.cameraExperience != CameraExperience.BEGINNER }
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
     val useRawMaxHdrComposition: StateFlow<Boolean> = userPreferencesRepository.userPreferences
         .map { it.useRawMaxHdrComposition }
@@ -1781,10 +1803,10 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
             MultiFrameConfig.DEFAULT_SUPER_RESOLUTION_SCALE,
         )
     val useLivePhoto: StateFlow<Boolean> = userPreferencesRepository.userPreferences
-        .map { it.useLivePhoto }
+        .map { it.useLivePhoto && it.cameraExperience != CameraExperience.BEGINNER }
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
     val enableDevelopAnimation: StateFlow<Boolean> = userPreferencesRepository.userPreferences
-        .map { it.enableDevelopAnimation }
+        .map { it.enableDevelopAnimation && it.cameraExperience != CameraExperience.BEGINNER }
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
     val backgroundImage: StateFlow<String> = userPreferencesRepository.userPreferences
         .map { it.backgroundImage }
@@ -1805,7 +1827,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         .map { it.tonemapMode }
         .stateIn(viewModelScope, SharingStarted.Eagerly, "SYSTEM_DEFAULT")
     val naturalLightEnabled: StateFlow<Boolean> = userPreferencesRepository.userPreferences
-        .map { it.naturalLightEnabled }
+        .map { it.naturalLightEnabled && it.cameraExperience != CameraExperience.BEGINNER }
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
     val naturalLightWarningShown: StateFlow<Boolean> = userPreferencesRepository.userPreferences
         .map { it.naturalLightWarningShown }
@@ -1817,7 +1839,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         .map { it.fixTonemapCapture }
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
     val applyUltraHDR: StateFlow<Boolean> = userPreferencesRepository.userPreferences
-        .map { it.applyUltraHDR }
+        .map { it.applyUltraHDR && it.cameraExperience != CameraExperience.BEGINNER }
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
     val colorSpace: StateFlow<ColorSpace> = userPreferencesRepository.userPreferences
         .map { it.colorSpace }
@@ -1842,16 +1864,16 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         .stateIn(viewModelScope, SharingStarted.Eagerly, RawProfile.default)
 
     val useP010: StateFlow<Boolean> = userPreferencesRepository.userPreferences
-        .map { it.useP010 }
+        .map { it.useP010 && it.cameraExperience != CameraExperience.BEGINNER }
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
     val useHlg10: StateFlow<Boolean> = userPreferencesRepository.userPreferences
-        .map { it.useHlg10 }
+        .map { it.useHlg10 && it.cameraExperience != CameraExperience.BEGINNER }
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
     val hlgHardwareCompatibilityEnabled: StateFlow<Boolean> = userPreferencesRepository.userPreferences
         .map { it.hlgHardwareCompatibilityEnabled }
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
     val useP3ColorSpace: StateFlow<Boolean> = userPreferencesRepository.userPreferences
-        .map { it.useP3ColorSpace }
+        .map { it.useP3ColorSpace && it.cameraExperience != CameraExperience.BEGINNER }
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
     val ultraHdrGainMapEnabled: StateFlow<Boolean> = userPreferencesRepository.userPreferences
         .map { it.ultraHdrGainMapEnabled }
@@ -2148,11 +2170,13 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                 if (currentCameraState.quickShotConfig.resolution != it.quickShotResolution) {
                     cameraController.setQuickShotResolution(it.quickShotResolution)
                 }
-                // 同步 RAW 设置到相机控制器
-                val multipleExposureEnabled = it.useMultipleExposure
-                val effectiveUseRaw = it.useRaw && !multipleExposureEnabled
-                val effectiveUseJpgMax = it.useJpgMax && !multipleExposureEnabled
-                val effectiveUseRawMax = it.useRawMax && !multipleExposureEnabled
+                // Beginner always uses the quick, single-frame JPEG profile. These
+                // values are effective-only, so returning to Pro restores its setup.
+                val isBeginnerCamera = it.cameraExperience == CameraExperience.BEGINNER
+                val multipleExposureEnabled = it.useMultipleExposure && !isBeginnerCamera
+                val effectiveUseRaw = it.useRaw && !multipleExposureEnabled && !isBeginnerCamera
+                val effectiveUseJpgMax = it.useJpgMax && !multipleExposureEnabled && !isBeginnerCamera
+                val effectiveUseRawMax = it.useRawMax && !multipleExposureEnabled && !isBeginnerCamera
                 val effectiveMultiFrameOutputScale = resolveMultiFrameOutputScale(
                     useJpgMax = effectiveUseJpgMax,
                     useRawMax = effectiveUseRawMax,
@@ -2164,7 +2188,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                         userPreferencesRepository.saveRawColorEngine(effectiveRawRenderingEngine)
                     }
                 }
-                if (it.naturalLightEnabled &&
+                if (!isBeginnerCamera && it.naturalLightEnabled &&
                     (multipleExposureEnabled || shouldDisableNaturalLightForJpgMax(it))
                 ) {
                     viewModelScope.launch {
@@ -2217,7 +2241,9 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                 if (cameraController.state.value.meteringMode != it.meteringMode) {
                     cameraController.setMeteringMode(it.meteringMode)
                 }
-                cameraController.setCaptureMode(it.captureMode)
+                cameraController.setCaptureMode(
+                    if (isBeginnerCamera) CaptureMode.PHOTO else it.captureMode
+                )
                 cameraController.setVideoResolution(it.videoResolution)
                 cameraController.setVideoFps(it.videoFps)
                 cameraController.setVideoAspectRatio(it.videoAspectRatio)
@@ -2232,21 +2258,28 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                 cameraController.setVideoCodec(it.videoCodec)
                 cameraController.setMirrorFrontCameraEnabled(it.mirrorFrontCamera)
                 multipleExposureState = multipleExposureState.copy(
-                    enabled = it.useMultipleExposure,
+                    enabled = multipleExposureEnabled,
                     targetCount = it.multipleExposureCount
                 )
                 // 同步 Live Photo 设置到相机控制器
                 cameraController.setUseLivePhoto(
-                    it.useLivePhoto && !effectiveUseJpgMax && it.captureMode == CaptureMode.PHOTO
+                    !isBeginnerCamera && it.useLivePhoto && !effectiveUseJpgMax &&
+                        it.captureMode == CaptureMode.PHOTO
                 )
                 // 同步 Ultra HDR 设置到相机控制器
-                cameraController.setApplyUltraHDR(it.applyUltraHDR)
+                cameraController.setApplyUltraHDR(!isBeginnerCamera && it.applyUltraHDR)
                 // 同步 P010 设置到相机控制器
-                cameraController.setUseP010(it.useP010)
+                cameraController.setUseP010(!isBeginnerCamera && it.useP010)
                 // 同步 HLG10 设置到相机控制器
-                cameraController.setUseHlg10(it.useHlg10)
+                cameraController.setUseHlg10(!isBeginnerCamera && it.useHlg10)
                 // 同步 P3 色域设置到相机控制器
-                cameraController.setUseP3ColorSpace(it.useP3ColorSpace)
+                cameraController.setUseP3ColorSpace(!isBeginnerCamera && it.useP3ColorSpace)
+                if (isBeginnerCamera) {
+                    currentFrameId = null
+                    applyDefaultVirtualAperture(0f)
+                } else {
+                    applyDefaultVirtualAperture(it.defaultVirtualAperture)
+                }
             }
         }
 
@@ -2358,7 +2391,10 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                 } catch (e: IllegalArgumentException) {
                     // 如果保存的值无效，使用默认值
                 }
-                cameraController.setCaptureMode(prefs.captureMode)
+                val isBeginnerCamera = prefs.cameraExperience == CameraExperience.BEGINNER
+                cameraController.setCaptureMode(
+                    if (isBeginnerCamera) CaptureMode.PHOTO else prefs.captureMode
+                )
                 cameraController.setQuickShotResolution(prefs.quickShotResolution)
                 cameraController.setVideoResolution(prefs.videoResolution)
                 cameraController.setVideoFps(prefs.videoFps)
@@ -2375,13 +2411,20 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                 cameraController.setMeteringMode(prefs.meteringMode)
 
                 // 根据启动时的拍摄模式应用照片 LUT 或独立的视频 LUT。
-                resolveLutIdForMode(prefs, prefs.captureMode)?.let {
-                    setLut(it, persist = false)
+                if (!isBeginnerCamera) {
+                    resolveLutIdForMode(prefs, prefs.captureMode)?.let {
+                        applyLut(it)
+                    }
+                } else {
+                    beginnerRecipeOverride.value = prefs.beginnerSimulation.recipe
+                    applyLut("none")
                 }
 
                 // 应用保存的边框配置
-                if (prefs.frameId != null) {
+                if (!isBeginnerCamera && prefs.frameId != null) {
                     currentFrameId = prefs.frameId
+                } else if (isBeginnerCamera) {
+                    currentFrameId = null
                 }
 
                 showHistogram = prefs.showHistogram
@@ -2389,11 +2432,11 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                 // 应用保存的网格线设置
                 cameraController.setShowGrid(prefs.showGrid)
 
-                cameraController.setUseMultipleExposure(prefs.useMultipleExposure)
+                cameraController.setUseMultipleExposure(prefs.useMultipleExposure && !isBeginnerCamera)
                 cameraController.setMultiFrameOutputScale(
                     resolveMultiFrameOutputScale(
-                        useJpgMax = prefs.useJpgMax && !prefs.useMultipleExposure,
-                        useRawMax = prefs.useRawMax && !prefs.useMultipleExposure,
+                        useJpgMax = prefs.useJpgMax && !prefs.useMultipleExposure && !isBeginnerCamera,
+                        useRawMax = prefs.useRawMax && !prefs.useMultipleExposure && !isBeginnerCamera,
                         rawMaxOutputScale = prefs.rawMaxOutputScale,
                     )
                 )
@@ -2401,18 +2444,23 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                 cameraController.setUseJpgMaxHdrComposition(prefs.useJpgMaxHdrComposition)
                 cameraController.setUseRawMaxHdrComposition(prefs.useRawMaxHdrComposition)
                 cameraController.setUseLivePhoto(
-                    prefs.useLivePhoto && !prefs.useJpgMax && prefs.captureMode == CaptureMode.PHOTO
+                    !isBeginnerCamera && prefs.useLivePhoto && !prefs.useJpgMax &&
+                        prefs.captureMode == CaptureMode.PHOTO
                 )
-                cameraController.setTonemapMode(effectiveCameraTonemapMode(prefs))
+                cameraController.setTonemapMode(
+                    if (isBeginnerCamera) TONEMAP_MODE_SYSTEM_DEFAULT else effectiveCameraTonemapMode(prefs)
+                )
                 cameraController.setFixTonemapPreview(prefs.fixTonemapPreview)
                 cameraController.setFixTonemapCapture(prefs.fixTonemapCapture)
 
                 // 应用保存的虚拟光圈
-                applyDefaultVirtualAperture(prefs.defaultVirtualAperture)
+                applyDefaultVirtualAperture(
+                    if (isBeginnerCamera) 0f else prefs.defaultVirtualAperture
+                )
             } else {
                 // 如果没有任何偏好设置，使用配置文件中的默认 LUT（第一个）
                 val defaultLut = availableLutList.firstOrNull { it.isDefault }
-                defaultLut?.let { setLut(it.id, persist = false) }
+                defaultLut?.let { applyLut(it.id) }
             }
 
             _isInitialized.value = true
@@ -3774,6 +3822,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun setCaptureMode(mode: CaptureMode) {
+        if (cameraExperience.value == CameraExperience.BEGINNER && mode != CaptureMode.PHOTO) return
         if (state.value.videoRecordingState.isRecording && mode != state.value.captureMode) return
         val shouldDisableVideoLog = mode != CaptureMode.VIDEO &&
             state.value.videoConfig.logProfile != VideoLogProfile.OFF
@@ -4125,6 +4174,10 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
      * 设置当前 LUT
      */
     fun setLut(lutId: String?, persist: Boolean = true) {
+        if (cameraExperience.value == CameraExperience.BEGINNER) {
+            applyLut("none")
+            return
+        }
         val normalizedLutId = lutId ?: "none"
         applyLut(normalizedLutId)
 
@@ -4143,6 +4196,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun setPhotoLut(lutId: String?) {
+        if (cameraExperience.value == CameraExperience.BEGINNER) return
         val normalizedLutId = lutId ?: "none"
         val shouldApply = state.value.captureMode != CaptureMode.VIDEO ||
             !userPreferences.value.separateVideoLutEnabled
@@ -4156,6 +4210,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun setVideoLut(lutId: String?) {
+        if (cameraExperience.value == CameraExperience.BEGINNER) return
         val normalizedLutId = lutId ?: "none"
         if (state.value.captureMode == CaptureMode.VIDEO &&
             userPreferences.value.separateVideoLutEnabled
@@ -4168,6 +4223,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun setSeparateVideoLutEnabled(enabled: Boolean) {
+        if (cameraExperience.value == CameraExperience.BEGINNER) return
         if (userPreferences.value.separateVideoLutEnabled == enabled) return
         viewModelScope.launch {
             val currentPreferences = userPreferencesRepository.userPreferences.first()
@@ -4291,6 +4347,10 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     fun updateLut() {
         viewModelScope.launch {
             val preferences = userPreferencesRepository.userPreferences.first()
+            if (preferences.cameraExperience == CameraExperience.BEGINNER) {
+                applyLut("none")
+                return@launch
+            }
             val newLutId = resolveLutIdForMode(preferences, state.value.captureMode) ?: return@launch
             if (currentLutId.value != newLutId) {
                 setLut(newLutId, persist = false)

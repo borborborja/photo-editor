@@ -64,8 +64,8 @@ fun BeginnerCameraScreen(
     viewModel: CameraViewModel,
     galleryViewModel: GalleryViewModel,
     onGalleryClick: () -> Unit,
-    onSettingsClick: () -> Unit,
     onSwitchToPro: () -> Unit,
+    canSwitchToPro: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val state by viewModel.state.collectAsState()
@@ -169,7 +169,6 @@ fun BeginnerCameraScreen(
         BeginnerTopBar(
             flashMode = state.flashMode,
             onFlashToggle = viewModel::toggleFlash,
-            onSettingsClick = onSettingsClick,
             modifier = Modifier.align(Alignment.TopCenter),
         )
 
@@ -247,7 +246,7 @@ fun BeginnerCameraScreen(
                     fontSize = 14.sp,
                     modifier = Modifier
                         .clip(RoundedCornerShape(16.dp))
-                        .clickable(onClick = onSwitchToPro)
+                        .clickable(enabled = canSwitchToPro, onClick = onSwitchToPro)
                         .padding(horizontal = 10.dp, vertical = 6.dp),
                 )
             }
@@ -259,7 +258,6 @@ fun BeginnerCameraScreen(
 private fun BeginnerTopBar(
     flashMode: Int,
     onFlashToggle: () -> Unit,
-    onSettingsClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Row(
@@ -280,25 +278,16 @@ private fun BeginnerTopBar(
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
             )
         }
-        Row {
-            IconButton(onClick = onFlashToggle) {
-                Icon(
-                    imageVector = when (flashMode) {
-                        0 -> AppIcons.FlashOff
-                        1 -> AppIcons.FlashOn
-                        else -> AppIcons.FlashlightOn
-                    },
-                    contentDescription = stringResource(R.string.flash),
-                    tint = Color.White,
-                )
-            }
-            IconButton(onClick = onSettingsClick) {
-                Icon(
-                    imageVector = AppIcons.Tune,
-                    contentDescription = stringResource(R.string.settings),
-                    tint = Color.White,
-                )
-            }
+        IconButton(onClick = onFlashToggle) {
+            Icon(
+                imageVector = when (flashMode) {
+                    0 -> AppIcons.FlashOff
+                    1 -> AppIcons.FlashOn
+                    else -> AppIcons.FlashlightOn
+                },
+                contentDescription = stringResource(R.string.flash),
+                tint = Color.White,
+            )
         }
     }
 }

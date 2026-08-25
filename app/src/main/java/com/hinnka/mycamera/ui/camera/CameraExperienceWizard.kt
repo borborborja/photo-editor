@@ -142,12 +142,13 @@ private fun CameraExperienceOption(
 @Composable
 fun ProExperienceSwitcher(
     onSwitchToBeginner: () -> Unit,
+    enabled: Boolean,
     modifier: Modifier = Modifier,
 ) {
     Surface(
         modifier = modifier
             .wrapContentWidth()
-            .clickable(onClick = onSwitchToBeginner),
+            .clickable(enabled = enabled, onClick = onSwitchToBeginner),
         color = Color.Black.copy(alpha = 0.56f),
         shape = RoundedCornerShape(18.dp),
     ) {

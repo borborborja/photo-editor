@@ -19,4 +19,11 @@ class CameraExperienceTest {
         assertEquals(1.18f, BeginnerSimulation.VIVID.recipe.saturation)
         assertEquals(0f, BeginnerSimulation.MONO.recipe.saturation)
     }
+
+    @Test
+    fun `camera experience cannot change while video owns the camera`() {
+        assertEquals(false, canChangeCameraExperience(isVideoRecording = true, isVideoProcessing = false))
+        assertEquals(false, canChangeCameraExperience(isVideoRecording = false, isVideoProcessing = true))
+        assertEquals(true, canChangeCameraExperience(isVideoRecording = false, isVideoProcessing = false))
+    }
 }
