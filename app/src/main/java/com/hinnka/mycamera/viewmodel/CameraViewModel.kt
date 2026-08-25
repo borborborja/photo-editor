@@ -43,6 +43,8 @@ import com.hinnka.mycamera.lut.getBaselineColorCorrectionConfig
 import com.hinnka.mycamera.lut.creator.LutGenerator
 import com.hinnka.mycamera.lut.creator.OpenAIApiClient
 import com.hinnka.mycamera.model.CameraPreset
+import com.hinnka.mycamera.model.BeginnerSimulation
+import com.hinnka.mycamera.model.CameraExperience
 import com.hinnka.mycamera.model.ColorRecipeParams
 import com.hinnka.mycamera.model.LutSelectorMode
 import com.hinnka.mycamera.model.SafeImage
@@ -586,6 +588,19 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         .map { it.toEffectParams() }
         .stateIn(viewModelScope, SharingStarted.Eagerly, EffectParams.DEFAULT)
 
+    val cameraExperience: StateFlow<CameraExperience> = userPreferencesRepository.userPreferences
+        .map { it.cameraExperience }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, CameraExperience.BEGINNER)
+
+    val isCameraExperienceOnboardingComplete: StateFlow<Boolean> =
+        userPreferencesRepository.userPreferences
+            .map { it.cameraExperienceOnboardingComplete }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    val beginnerSimulation: StateFlow<BeginnerSimulation> = userPreferencesRepository.userPreferences
+        .map { it.beginnerSimulation }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, BeginnerSimulation.NATURAL)
+
     val customPresets: StateFlow<List<com.hinnka.mycamera.model.CameraPreset>> = userPreferencesRepository.userPreferences
         .map { it.customPresets }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
@@ -717,6 +732,74 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
 
     fun getMergedRecipeParams(recipe: ColorRecipeParams = currentRecipeParams.value): ColorRecipeParams {
         return recipe
+    }
+
+    /**
+     * Selects one of the two camera experiences.  Beginner mode intentionally
+     * clears all LUT paths and enables the single-frame JPEG path before its UI
+     * is shown, keeping the shutter response immediate.
+     */
+    fun selectCameraExperience(experience: CameraExperience) {
+        viewModelScope.launch {
+            if (experience == CameraExperience.BEGINNER) {
+                applyBeginnerCameraDefaults()
+            }
+            userPreferencesRepository.saveCameraExperience(experience)
+        }
+    }
+
+    /** Reapplies the lightweight profile when the app is relaunched in Beginner mode. */
+    fun prepareBeginnerCamera() {
+        viewModelScope.launch {
+            applyBeginnerCameraDefaults()
+        }
+    }
+
+    /** Applies a built-in colour recipe; the selected look never loads a LUT. */
+    fun selectBeginnerSimulation(simulation: BeginnerSimulation) {
+        viewModelScope.launch {
+            applyCameraFeatureUpdate(
+                CameraFeatureUpdate(
+                    lutId = SettingValue(null),
+                    colorRecipe = SettingValue(simulation.recipe),
+                    effects = SettingValue(EffectParams.DEFAULT),
+                    useRaw = SettingValue(false),
+                    useJpgMax = SettingValue(false),
+                    useRawMax = SettingValue(false),
+                    useMultipleExposure = SettingValue(false),
+                )
+            )
+            cameraController.setTimerSeconds(0)
+            cameraController.setUseLivePhoto(false)
+            userPreferencesRepository.saveUseLivePhoto(false)
+            userPreferencesRepository.saveBeginnerSimulation(simulation)
+        }
+    }
+
+    private suspend fun applyBeginnerCameraDefaults() {
+        if (state.value.captureMode != CaptureMode.PHOTO) {
+            cameraController.setCaptureMode(CaptureMode.PHOTO)
+            currentSurfaceTexture = null
+            cameraController.closeCamera()
+            userPreferencesRepository.saveCaptureMode(CaptureMode.PHOTO)
+        }
+
+        applyCameraFeatureUpdate(
+            CameraFeatureUpdate(
+                lutId = SettingValue(null),
+                colorRecipe = SettingValue(
+                    userPreferencesRepository.userPreferences.first().beginnerSimulation.recipe
+                ),
+                effects = SettingValue(EffectParams.DEFAULT),
+                useRaw = SettingValue(false),
+                useJpgMax = SettingValue(false),
+                useRawMax = SettingValue(false),
+                useMultipleExposure = SettingValue(false),
+            )
+        )
+        cameraController.setTimerSeconds(0)
+        cameraController.setUseLivePhoto(false)
+        userPreferencesRepository.saveUseLivePhoto(false)
     }
 
     fun applyPreset(preset: com.hinnka.mycamera.model.CameraPreset?) {

@@ -50,6 +50,8 @@ import com.hinnka.mycamera.video.VideoRecordingPath
 import com.hinnka.mycamera.video.VideoResolutionPreset
 import com.hinnka.mycamera.model.EffectParams
 import com.hinnka.mycamera.model.CameraPreset
+import com.hinnka.mycamera.model.BeginnerSimulation
+import com.hinnka.mycamera.model.CameraExperience
 import com.hinnka.mycamera.model.LutSelectorMode
 import com.hinnka.mycamera.mgc.PhotonLookContract
 import com.hinnka.mycamera.processor.DenoiseStrength
@@ -120,6 +122,9 @@ enum class AiFocusTargetMode {
  * 用户偏好设置数据类
  */
 data class UserPreferences(
+    val cameraExperience: CameraExperience = CameraExperience.BEGINNER,
+    val cameraExperienceOnboardingComplete: Boolean = false,
+    val beginnerSimulation: BeginnerSimulation = BeginnerSimulation.NATURAL,
     val captureMode: CaptureMode = CaptureMode.PHOTO,
     val aspectRatio: String = "RATIO_4_3",
     val topSheetAspectRatios: List<AspectRatio> = AspectRatio.defaultTopSheetRatios,
@@ -357,6 +362,10 @@ class UserPreferencesRepository(private val context: Context) {
     companion object {
         // DataStore Keys
         private val CAPTURE_MODE = stringPreferencesKey("capture_mode")
+        private val CAMERA_EXPERIENCE = stringPreferencesKey("camera_experience")
+        private val CAMERA_EXPERIENCE_ONBOARDING_COMPLETE =
+            booleanPreferencesKey("camera_experience_onboarding_complete")
+        private val BEGINNER_SIMULATION = stringPreferencesKey("beginner_simulation")
         private val ASPECT_RATIO_KEY = stringPreferencesKey("aspect_ratio")
         private val TOP_SHEET_ASPECT_RATIOS = stringPreferencesKey("top_sheet_aspect_ratios")
         private val CUSTOM_ASPECT_RATIOS = stringPreferencesKey("custom_aspect_ratios")
@@ -594,6 +603,14 @@ class UserPreferencesRepository(private val context: Context) {
                     (preferences[USE_RAW_MAX_HDR_COMPOSITION]
                         ?: MultiFrameConfig.DEFAULT_RAW_MAX_HDR_COMPOSITION)
             UserPreferences(
+                cameraExperience = CameraExperience.fromPersistedName(
+                    preferences[CAMERA_EXPERIENCE]
+                ),
+                cameraExperienceOnboardingComplete =
+                    preferences[CAMERA_EXPERIENCE_ONBOARDING_COMPLETE] ?: false,
+                beginnerSimulation = BeginnerSimulation.fromPersistedName(
+                    preferences[BEGINNER_SIMULATION]
+                ),
                 captureMode = CaptureMode.valueOf(preferences[CAPTURE_MODE] ?: CaptureMode.PHOTO.name),
                 aspectRatio = preferences[ASPECT_RATIO_KEY] ?: "RATIO_4_3",
                 topSheetAspectRatios = parseTopSheetAspectRatios(
@@ -1083,6 +1100,20 @@ class UserPreferencesRepository(private val context: Context) {
     suspend fun saveCaptureMode(captureMode: CaptureMode) {
         context.dataStore.edit { preferences ->
             preferences[CAPTURE_MODE] = captureMode.name
+        }
+    }
+
+    /** Stores the selected camera surface and marks the first-run chooser complete. */
+    suspend fun saveCameraExperience(experience: CameraExperience) {
+        context.dataStore.edit { preferences ->
+            preferences[CAMERA_EXPERIENCE] = experience.name
+            preferences[CAMERA_EXPERIENCE_ONBOARDING_COMPLETE] = true
+        }
+    }
+
+    suspend fun saveBeginnerSimulation(simulation: BeginnerSimulation) {
+        context.dataStore.edit { preferences ->
+            preferences[BEGINNER_SIMULATION] = simulation.name
         }
     }
 

@@ -1340,4 +1340,21 @@
     <string name="preset_import_partial">Imported %1$d presets; %2$d failed</string>
     <string name="preset_export_success">Preset exported successfully</string>
     <string name="preset_export_failed">Failed to export preset</string>
+    <string name="camera_experience_wizard_title">Choose your camera</string>
+    <string name="camera_experience_wizard_subtitle">You can switch later. Both modes use the same fast, private camera pipeline.</string>
+    <string name="camera_experience_beginner">Beginner</string>
+    <string name="camera_experience_beginner_description">A clean photo camera with fast capture and five built-in simulations. No LUTs.</string>
+    <string name="camera_experience_pro">Pro</string>
+    <string name="camera_experience_pro_description">Full controls, RAW tools, presets and LUT support.</string>
+    <string name="camera_experience_choose_beginner">Use Beginner mode</string>
+    <string name="camera_experience_choose_pro">Use Pro mode</string>
+    <string name="camera_experience_photo">Photo</string>
+    <string name="camera_experience_pro_switch">Pro controls</string>
+    <string name="camera_experience_beginner_switch">Beginner camera</string>
+    <string name="camera_experience_simulations">Simulations · no LUTs</string>
+    <string name="camera_simulation_natural">Natural</string>
+    <string name="camera_simulation_warm">Warm</string>
+    <string name="camera_simulation_cool">Cool</string>
+    <string name="camera_simulation_vivid">Vivid</string>
+    <string name="camera_simulation_mono">Mono</string>
 </resources>

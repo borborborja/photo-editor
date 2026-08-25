@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -74,7 +75,11 @@ import com.hinnka.mycamera.lut.creator.LutCreatorViewModel
 import com.hinnka.mycamera.ml.StartupMlPreloader
 import com.hinnka.mycamera.screencapture.ScreenCaptureRenderConfigStore
 import com.hinnka.mycamera.ui.camera.CameraScreen
+import com.hinnka.mycamera.ui.camera.BeginnerCameraScreen
+import com.hinnka.mycamera.ui.camera.CameraExperienceWizard
+import com.hinnka.mycamera.ui.camera.ProExperienceSwitcher
 import com.hinnka.mycamera.data.FilmData
+import com.hinnka.mycamera.model.CameraExperience
 import com.hinnka.mycamera.ui.camera.ColorWalkScreen
 import com.hinnka.mycamera.ui.camera.FilmDetailScreen
 import com.hinnka.mycamera.ui.camera.FilmLibraryScreen
@@ -674,97 +679,124 @@ fun NavigationHost(
             }
         ) {
             composable(Routes.CAMERA) {
-                if (cameraViewModel.isExpanded) {
-                    Row {
-                        CameraScreen(
-                            viewModel = cameraViewModel,
-                            galleryViewModel = galleryViewModel,
-                            onGalleryClick = {
-                                navController.navigate(Routes.GALLERY)
-                                val latestPhoto = galleryViewModel.latestPhoto.value
-                                /*if (latestPhoto != null && System.currentTimeMillis() - latestPhoto.dateAdded < 3 * 60 * 1000) {
-                                    galleryViewModel.setCurrentPhotoById(latestPhoto.id)
-                                    navController.navigate(Routes.photoDetail(photoId = latestPhoto.id))
-                                }*/
-                            },
-                            onSettingsClick = {
-                                navController.navigate(Routes.SETTINGS)
-                            },
-                            onFilterManagementClick = { lutId ->
-                                navController.navigate(
-                                    Routes.filterManagement(
-                                        locateLutId = lutId,
-                                        videoLut = cameraViewModel.state.value.captureMode ==
-                                            CaptureMode.VIDEO &&
-                                            cameraViewModel.separateVideoLutEnabled.value
-                                    )
-                                )
-                            },
-                            onFrameManagementClick = {
-                                navController.navigate(Routes.FRAME_MANAGEMENT)
-                            },
-                            onToolboxClick = {
-                                navController.navigate(Routes.TOOLBOX)
-                            },
-                            onPresetEditClick = { id ->
-                                navController.navigate(Routes.presetEditor(id))
-                            },
-                            onPresetManagementClick = {
-                                navController.navigate(Routes.PRESET_MANAGEMENT)
-                            },
-                            modifier = Modifier.weight(1f)
-                        )
-                        GalleryDetailScreen(
-                            viewModel = galleryViewModel,
-                            isExpanded = true,
-                            onEdit = {
-                                navController.navigate(Routes.PHOTO_EDIT)
-                            },
-                            onViewBurst = { photoId ->
-                                navController.navigate(Routes.burstDetail(photoId))
-                            },
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                } else {
-                    CameraScreen(
+                val cameraExperience by cameraViewModel.cameraExperience.collectAsState()
+                val experienceOnboardingComplete by cameraViewModel
+                    .isCameraExperienceOnboardingComplete
+                    .collectAsState()
+
+                when {
+                    !experienceOnboardingComplete -> CameraExperienceWizard(
+                        onExperienceSelected = cameraViewModel::selectCameraExperience,
+                    )
+
+                    cameraExperience == CameraExperience.BEGINNER -> BeginnerCameraScreen(
                         viewModel = cameraViewModel,
                         galleryViewModel = galleryViewModel,
                         onGalleryClick = {
                             val latestPhoto = galleryViewModel.latestPhoto.value
-                            if (latestPhoto != null && System.currentTimeMillis() - latestPhoto.dateAdded < 3 * 60 * 1000) {
+                            if (latestPhoto != null &&
+                                System.currentTimeMillis() - latestPhoto.dateAdded < 3 * 60 * 1000
+                            ) {
                                 galleryViewModel.setCurrentPhotoById(latestPhoto.id)
                                 navController.navigate(Routes.photoDetail(photoId = latestPhoto.id))
                             } else {
                                 navController.navigate(Routes.GALLERY)
                             }
                         },
-                        onSettingsClick = {
-                            navController.navigate(Routes.SETTINGS)
-                        },
-                        onFilterManagementClick = { lutId ->
-                            navController.navigate(
-                                Routes.filterManagement(
-                                    locateLutId = lutId,
-                                    videoLut = cameraViewModel.state.value.captureMode ==
-                                        CaptureMode.VIDEO &&
-                                        cameraViewModel.separateVideoLutEnabled.value
-                                )
-                            )
-                        },
-                        onFrameManagementClick = {
-                            navController.navigate(Routes.FRAME_MANAGEMENT)
-                        },
-                        onToolboxClick = {
-                            navController.navigate(Routes.TOOLBOX)
-                        },
-                        onPresetEditClick = { id ->
-                            navController.navigate(Routes.presetEditor(id))
-                        },
-                        onPresetManagementClick = {
-                            navController.navigate(Routes.PRESET_MANAGEMENT)
+                        onSettingsClick = { navController.navigate(Routes.SETTINGS) },
+                        onSwitchToPro = {
+                            cameraViewModel.selectCameraExperience(CameraExperience.PRO)
                         },
                     )
+
+                    else -> Box(Modifier.fillMaxSize()) {
+                        if (cameraViewModel.isExpanded) {
+                            Row {
+                                CameraScreen(
+                                    viewModel = cameraViewModel,
+                                    galleryViewModel = galleryViewModel,
+                                    onGalleryClick = { navController.navigate(Routes.GALLERY) },
+                                    onSettingsClick = { navController.navigate(Routes.SETTINGS) },
+                                    onFilterManagementClick = { lutId ->
+                                        navController.navigate(
+                                            Routes.filterManagement(
+                                                locateLutId = lutId,
+                                                videoLut = cameraViewModel.state.value.captureMode ==
+                                                    CaptureMode.VIDEO &&
+                                                    cameraViewModel.separateVideoLutEnabled.value,
+                                            )
+                                        )
+                                    },
+                                    onFrameManagementClick = {
+                                        navController.navigate(Routes.FRAME_MANAGEMENT)
+                                    },
+                                    onToolboxClick = { navController.navigate(Routes.TOOLBOX) },
+                                    onPresetEditClick = { id ->
+                                        navController.navigate(Routes.presetEditor(id))
+                                    },
+                                    onPresetManagementClick = {
+                                        navController.navigate(Routes.PRESET_MANAGEMENT)
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                )
+                                GalleryDetailScreen(
+                                    viewModel = galleryViewModel,
+                                    isExpanded = true,
+                                    onEdit = { navController.navigate(Routes.PHOTO_EDIT) },
+                                    onViewBurst = { photoId ->
+                                        navController.navigate(Routes.burstDetail(photoId))
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                        } else {
+                            CameraScreen(
+                                viewModel = cameraViewModel,
+                                galleryViewModel = galleryViewModel,
+                                onGalleryClick = {
+                                    val latestPhoto = galleryViewModel.latestPhoto.value
+                                    if (latestPhoto != null &&
+                                        System.currentTimeMillis() - latestPhoto.dateAdded < 3 * 60 * 1000
+                                    ) {
+                                        galleryViewModel.setCurrentPhotoById(latestPhoto.id)
+                                        navController.navigate(Routes.photoDetail(photoId = latestPhoto.id))
+                                    } else {
+                                        navController.navigate(Routes.GALLERY)
+                                    }
+                                },
+                                onSettingsClick = { navController.navigate(Routes.SETTINGS) },
+                                onFilterManagementClick = { lutId ->
+                                    navController.navigate(
+                                        Routes.filterManagement(
+                                            locateLutId = lutId,
+                                            videoLut = cameraViewModel.state.value.captureMode ==
+                                                CaptureMode.VIDEO &&
+                                                cameraViewModel.separateVideoLutEnabled.value,
+                                        )
+                                    )
+                                },
+                                onFrameManagementClick = {
+                                    navController.navigate(Routes.FRAME_MANAGEMENT)
+                                },
+                                onToolboxClick = { navController.navigate(Routes.TOOLBOX) },
+                                onPresetEditClick = { id ->
+                                    navController.navigate(Routes.presetEditor(id))
+                                },
+                                onPresetManagementClick = {
+                                    navController.navigate(Routes.PRESET_MANAGEMENT)
+                                },
+                            )
+                        }
+
+                        ProExperienceSwitcher(
+                            onSwitchToBeginner = {
+                                cameraViewModel.selectCameraExperience(CameraExperience.BEGINNER)
+                            },
+                            modifier = Modifier
+                                .align(Alignment.TopStart)
+                                .padding(start = 12.dp, top = 98.dp),
+                        )
+                    }
                 }
             }
 
