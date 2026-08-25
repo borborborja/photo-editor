@@ -1,6 +1,7 @@
 package com.hinnka.mycamera.fossin
 
 import android.content.Intent
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.BitmapShader
@@ -85,6 +86,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.annotation.StringRes
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -103,6 +105,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import java.io.FileNotFoundException
 import java.io.File
 import java.io.FileOutputStream
@@ -138,6 +141,54 @@ private fun Intent.sharedImageUri(): Uri? = if (android.os.Build.VERSION.SDK_INT
 private enum class EditorTool {
     Looks, Tune, Details, TonalContrast, Curves, WhiteBalance, Crop, Expand, Perspective, Rotate, Color, Hsl, Selective, Brush, Healing, LensBlur, Vignette, Grain, Bloom, Effects, HdrScape, GlamourGlow, Drama, Vintage, GrainyFilm, Retrolux, Grunge, BlackWhite, Noir, Portrait, FaceEnhance, HeadPose, Frame, DoubleExposure, Text
 }
+
+private const val FOSSIN_EDITOR_PREFERENCES = "fossin_editor_preferences"
+private const val FOSSIN_GESTURE_MODE_ENABLED = "gesture_mode_enabled"
+private const val GESTURE_TOUCH_SLOP_DP = 14f
+private const val GESTURE_FULL_RANGE_DP = 240f
+
+internal enum class SnapseedParameterDirection { Previous, Next }
+
+/** Pure gesture math kept separate from Compose so the touch behaviour stays testable. */
+internal fun snapseedParameterIndex(
+    currentIndex: Int,
+    parameterCount: Int,
+    direction: SnapseedParameterDirection,
+): Int {
+    if (parameterCount <= 0) return 0
+    val current = currentIndex.coerceIn(0, parameterCount - 1)
+    return when (direction) {
+        SnapseedParameterDirection.Previous -> (current - 1).coerceAtLeast(0)
+        SnapseedParameterDirection.Next -> (current + 1).coerceAtMost(parameterCount - 1)
+    }
+}
+
+internal fun snapseedAdjustedValue(
+    startValue: Float,
+    range: ClosedFloatingPointRange<Float>,
+    horizontalDistancePx: Float,
+    fullRangeDistancePx: Float,
+): Float {
+    val safeDistance = fullRangeDistancePx.coerceAtLeast(1f)
+    val rangeSize = range.endInclusive - range.start
+    return (startValue + horizontalDistancePx / safeDistance * rangeSize)
+        .coerceIn(range.start, range.endInclusive)
+}
+
+internal fun snapseedValuePercent(value: Float, range: ClosedFloatingPointRange<Float>): Int {
+    val rangeSize = (range.endInclusive - range.start).coerceAtLeast(0.0001f)
+    return (((value - range.start) / rangeSize) * 100f).roundToInt().coerceIn(0, 100)
+}
+
+private enum class SnapseedGestureAxis { Horizontal, Vertical }
+
+private data class GestureParameter(
+    val key: String,
+    @StringRes val labelRes: Int,
+    val value: Float,
+    val range: ClosedFloatingPointRange<Float>,
+    val update: (EditorState, Float) -> EditorState,
+)
 internal enum class SnapEffect {
     HdrScape, GlamourGlow, Drama, Vintage, GrainyFilm, Retrolux, Grunge, BlackWhite, Noir, Portrait
 }
@@ -658,6 +709,174 @@ private fun EditorState.withSyncedPrimarySelective(): EditorState {
     return copy(selectivePoints = points)
 }
 
+private fun snapseedGestureParameters(
+    tool: EditorTool,
+    state: EditorState,
+    selectedHslChannel: HslChannel,
+    hasOverlay: Boolean,
+): List<GestureParameter> {
+    fun parameter(
+        key: String,
+        @StringRes labelRes: Int,
+        value: Float,
+        range: ClosedFloatingPointRange<Float>,
+        update: (EditorState, Float) -> EditorState,
+    ) = GestureParameter(key, labelRes, value, range, update)
+
+    fun snapEffect(effect: SnapEffect, key: String, @StringRes labelRes: Int) = parameter(
+        key = key,
+        labelRes = labelRes,
+        value = state.snapEffects[effect] ?: 0f,
+        range = 0f..1f,
+    ) { editor, value -> editor.copy(snapEffects = editor.snapEffects + (effect to value)) }
+
+    return when (tool) {
+        EditorTool.Looks -> if (state.lut == null) emptyList() else listOf(
+            parameter("looks-intensity", R.string.fossin_strength, state.intensity, 0f..1f) { editor, value -> editor.copy(intensity = value) },
+        )
+        EditorTool.Tune -> listOf(
+            parameter("tune-exposure", R.string.fossin_exposure, state.exposure, -2f..2f) { editor, value -> editor.copy(exposure = value) },
+            parameter("tune-contrast", R.string.fossin_contrast, state.contrast, 0.5f..1.5f) { editor, value -> editor.copy(contrast = value) },
+            parameter("tune-saturation", R.string.fossin_saturation, state.saturation, 0f..2f) { editor, value -> editor.copy(saturation = value) },
+            parameter("tune-ambiance", R.string.fossin_ambiance, state.ambiance, -1f..1f) { editor, value -> editor.copy(ambiance = value) },
+            parameter("tune-warmth", R.string.fossin_warmth, state.warmth, -1f..1f) { editor, value -> editor.copy(warmth = value) },
+            parameter("tune-highlights", R.string.recipe_param_highlights, state.highlights, -1f..1f) { editor, value -> editor.copy(highlights = value) },
+            parameter("tune-shadows", R.string.recipe_param_shadows, state.shadows, -1f..1f) { editor, value -> editor.copy(shadows = value) },
+        )
+        EditorTool.Details -> listOf(
+            parameter("details-structure", R.string.fossin_structure, state.detail, -1f..1f) { editor, value -> editor.copy(detail = value) },
+            parameter("details-sharpening", R.string.fossin_sharpening, state.sharpening, 0f..1f) { editor, value -> editor.copy(sharpening = value) },
+        )
+        EditorTool.TonalContrast -> listOf(
+            parameter("tonal-shadows", R.string.fossin_tonal_shadows, state.tonalContrastShadows, -1f..1f) { editor, value -> editor.copy(tonalContrastShadows = value) },
+            parameter("tonal-midtones", R.string.fossin_tonal_midtones, state.tonalContrastMidtones, -1f..1f) { editor, value -> editor.copy(tonalContrastMidtones = value) },
+            parameter("tonal-highlights", R.string.fossin_tonal_highlights, state.tonalContrastHighlights, -1f..1f) { editor, value -> editor.copy(tonalContrastHighlights = value) },
+        )
+        EditorTool.Curves -> listOf(
+            parameter("curves-shadows", R.string.recipe_param_shadows, state.toneToe, -1f..1f) { editor, value -> editor.copy(toneToe = value) },
+            parameter("curves-highlights", R.string.recipe_param_highlights, state.toneShoulder, -1f..1f) { editor, value -> editor.copy(toneShoulder = value) },
+            parameter("curves-midpoint", R.string.fossin_midpoint, state.tonePivot, -1f..1f) { editor, value -> editor.copy(tonePivot = value) },
+        )
+        EditorTool.WhiteBalance -> listOf(
+            parameter("white-balance-temperature", R.string.fossin_temperature, state.warmth, -1f..1f) { editor, value -> editor.copy(warmth = value) },
+            parameter("white-balance-tint", R.string.fossin_tint, state.tint, -1f..1f) { editor, value -> editor.copy(tint = value) },
+        )
+        EditorTool.Crop -> emptyList()
+        EditorTool.Expand -> listOf(
+            parameter("expand-amount", R.string.fossin_expand_amount, state.expandAmount, 0f..1f) { editor, value -> editor.copy(expandAmount = value) },
+        )
+        EditorTool.Perspective -> listOf(
+            parameter("perspective-horizontal", R.string.fossin_horizontal, state.perspectiveHorizontal, -1f..1f) { editor, value -> editor.copy(perspectiveHorizontal = value) },
+            parameter("perspective-vertical", R.string.fossin_vertical, state.perspectiveVertical, -1f..1f) { editor, value -> editor.copy(perspectiveVertical = value) },
+            parameter("perspective-rotate", R.string.fossin_rotate, state.perspectiveRotate, -1f..1f) { editor, value -> editor.copy(perspectiveRotate = value) },
+            parameter("perspective-scale", R.string.fossin_scale, state.perspectiveScale, -1f..1f) { editor, value -> editor.copy(perspectiveScale = value) },
+        )
+        EditorTool.Rotate -> listOf(
+            parameter("rotate-straighten", R.string.fossin_straighten, state.rotationFine, -1f..1f) { editor, value -> editor.copy(rotationFine = value) },
+        )
+        EditorTool.Color -> listOf(
+            parameter("color-tint", R.string.recipe_param_tint, state.tint, -1f..1f) { editor, value -> editor.copy(tint = value) },
+            parameter("color-fade", R.string.recipe_param_fade, state.fade, 0f..1f) { editor, value -> editor.copy(fade = value) },
+            parameter("color-vibrance", R.string.recipe_param_color, state.vibrance, -1f..1f) { editor, value -> editor.copy(vibrance = value) },
+        )
+        EditorTool.Hsl -> {
+            val hslValue = state.hsl[selectedHslChannel] ?: HslValue()
+            listOf(
+                parameter("hsl-${selectedHslChannel.name}-hue", R.string.fossin_hue, hslValue.hue, -1f..1f) { editor, value ->
+                    val current = editor.hsl[selectedHslChannel] ?: HslValue()
+                    editor.copy(hsl = editor.hsl + (selectedHslChannel to current.copy(hue = value)))
+                },
+                parameter("hsl-${selectedHslChannel.name}-chroma", R.string.fossin_chroma, hslValue.chroma, -1f..1f) { editor, value ->
+                    val current = editor.hsl[selectedHslChannel] ?: HslValue()
+                    editor.copy(hsl = editor.hsl + (selectedHslChannel to current.copy(chroma = value)))
+                },
+                parameter("hsl-${selectedHslChannel.name}-lightness", R.string.fossin_lightness, hslValue.lightness, -1f..1f) { editor, value ->
+                    val current = editor.hsl[selectedHslChannel] ?: HslValue()
+                    editor.copy(hsl = editor.hsl + (selectedHslChannel to current.copy(lightness = value)))
+                },
+            )
+        }
+        EditorTool.Selective -> listOf(
+            parameter("selective-x", R.string.fossin_center_x, state.selectiveX, 0f..1f) { editor, value -> editor.copy(selectiveX = value).withSyncedPrimarySelective() },
+            parameter("selective-y", R.string.fossin_center_y, state.selectiveY, 0f..1f) { editor, value -> editor.copy(selectiveY = value).withSyncedPrimarySelective() },
+            parameter("selective-radius", R.string.fossin_radius, state.selectiveRadius, 0.05f..1f) { editor, value -> editor.copy(selectiveRadius = value).withSyncedPrimarySelective() },
+            parameter("selective-exposure", R.string.fossin_exposure, state.selectiveExposure, -2f..2f) { editor, value -> editor.copy(selectiveExposure = value).withSyncedPrimarySelective() },
+            parameter("selective-contrast", R.string.fossin_contrast, state.selectiveContrast, 0f..2f) { editor, value -> editor.copy(selectiveContrast = value).withSyncedPrimarySelective() },
+            parameter("selective-saturation", R.string.fossin_saturation, state.selectiveSaturation, 0f..2f) { editor, value -> editor.copy(selectiveSaturation = value).withSyncedPrimarySelective() },
+            parameter("selective-structure", R.string.fossin_structure, state.selectiveStructure, -1f..1f) { editor, value -> editor.copy(selectiveStructure = value).withSyncedPrimarySelective() },
+        )
+        EditorTool.Brush -> listOf(
+            parameter("brush-x", R.string.fossin_center_x, state.brushX, 0f..1f) { editor, value -> editor.copy(brushX = value) },
+            parameter("brush-y", R.string.fossin_center_y, state.brushY, 0f..1f) { editor, value -> editor.copy(brushY = value) },
+            parameter("brush-radius", R.string.fossin_radius, state.brushRadius, 0.03f..1f) { editor, value -> editor.copy(brushRadius = value) },
+            parameter("brush-exposure", R.string.fossin_exposure, state.brushExposure, -2f..2f) { editor, value -> editor.copy(brushExposure = value) },
+            parameter("brush-saturation", R.string.fossin_saturation, state.brushSaturation, 0f..2f) { editor, value -> editor.copy(brushSaturation = value) },
+            parameter("brush-warmth", R.string.fossin_warmth, state.brushWarmth, -1f..1f) { editor, value -> editor.copy(brushWarmth = value) },
+        )
+        EditorTool.Healing -> listOf(
+            parameter("healing-x", R.string.fossin_center_x, state.healingX, 0f..1f) { editor, value -> editor.copy(healingX = value) },
+            parameter("healing-y", R.string.fossin_center_y, state.healingY, 0f..1f) { editor, value -> editor.copy(healingY = value) },
+            parameter("healing-radius", R.string.fossin_radius, state.healingRadius, 0.01f..0.3f) { editor, value -> editor.copy(healingRadius = value) },
+            parameter("healing-strength", R.string.fossin_strength, state.healingStrength, 0f..1f) { editor, value -> editor.copy(healingStrength = value) },
+        )
+        EditorTool.LensBlur -> buildList {
+            add(parameter("lens-blur-x", R.string.fossin_center_x, state.lensBlurX, 0f..1f) { editor, value -> editor.copy(lensBlurX = value) })
+            add(parameter("lens-blur-y", R.string.fossin_center_y, state.lensBlurY, 0f..1f) { editor, value -> editor.copy(lensBlurY = value) })
+            add(parameter("lens-blur-radius", R.string.fossin_radius, state.lensBlurRadius, 0.03f..1f) { editor, value -> editor.copy(lensBlurRadius = value) })
+            add(parameter("lens-blur-transition", R.string.fossin_transition, state.lensBlurTransition, 0.03f..1f) { editor, value -> editor.copy(lensBlurTransition = value) })
+            if (state.lensBlurShape == LensBlurShape.Linear) add(parameter("lens-blur-angle", R.string.fossin_angle, state.lensBlurAngle, -1f..1f) { editor, value -> editor.copy(lensBlurAngle = value) })
+            add(parameter("lens-blur-strength", R.string.fossin_strength, state.lensBlurStrength, 0f..1f) { editor, value -> editor.copy(lensBlurStrength = value) })
+        }
+        EditorTool.Vignette -> listOf(
+            parameter("vignette-outer", R.string.fossin_outer_brightness, state.vignette, -1f..1f) { editor, value -> editor.copy(vignette = value) },
+            parameter("vignette-inner", R.string.fossin_inner_brightness, state.vignetteInner, 0f..1f) { editor, value -> editor.copy(vignetteInner = value) },
+            parameter("vignette-x", R.string.fossin_center_x, state.vignetteX, 0f..1f) { editor, value -> editor.copy(vignetteX = value) },
+            parameter("vignette-y", R.string.fossin_center_y, state.vignetteY, 0f..1f) { editor, value -> editor.copy(vignetteY = value) },
+            parameter("vignette-radius", R.string.fossin_radius, state.vignetteRadius, 0.1f..1.4f) { editor, value -> editor.copy(vignetteRadius = value) },
+        )
+        EditorTool.Grain -> listOf(parameter("grain", R.string.recipe_param_film_grain, state.grain, 0f..1f) { editor, value -> editor.copy(grain = value) })
+        EditorTool.Bloom -> listOf(parameter("bloom", R.string.recipe_param_bloom, state.bloom, 0f..1f) { editor, value -> editor.copy(bloom = value) })
+        EditorTool.Effects -> listOf(
+            parameter("effects-flash", R.string.recipe_param_flash, state.flash, 0f..1f) { editor, value -> editor.copy(flash = value) },
+            parameter("effects-bleach", R.string.recipe_param_bleach_bypass, state.bleachBypass, 0f..1f) { editor, value -> editor.copy(bleachBypass = value) },
+            parameter("effects-soft-light", R.string.recipe_param_soft_light, state.softLight, 0f..1f) { editor, value -> editor.copy(softLight = value) },
+            parameter("effects-halation", R.string.recipe_param_hdf, state.halation, 0f..1f) { editor, value -> editor.copy(halation = value) },
+            parameter("effects-chromatic", R.string.recipe_param_chromatic_aberration, state.chromaticAberration, 0f..1f) { editor, value -> editor.copy(chromaticAberration = value) },
+            parameter("effects-noise", R.string.recipe_param_noise, state.noise, 0f..1f) { editor, value -> editor.copy(noise = value) },
+            parameter("effects-low-res", R.string.recipe_param_low_res, state.lowRes, 0f..1f) { editor, value -> editor.copy(lowRes = value) },
+        )
+        EditorTool.HdrScape -> listOf(snapEffect(SnapEffect.HdrScape, "hdr-scape", R.string.fossin_hdr_scape))
+        EditorTool.GlamourGlow -> listOf(snapEffect(SnapEffect.GlamourGlow, "glamour-glow", R.string.fossin_glamour_glow))
+        EditorTool.Drama -> listOf(snapEffect(SnapEffect.Drama, "drama", R.string.fossin_drama))
+        EditorTool.Vintage -> listOf(snapEffect(SnapEffect.Vintage, "vintage", R.string.fossin_vintage))
+        EditorTool.GrainyFilm -> listOf(snapEffect(SnapEffect.GrainyFilm, "grainy-film", R.string.fossin_grainy_film))
+        EditorTool.Retrolux -> listOf(snapEffect(SnapEffect.Retrolux, "retrolux", R.string.fossin_retrolux))
+        EditorTool.Grunge -> listOf(snapEffect(SnapEffect.Grunge, "grunge", R.string.fossin_grunge))
+        EditorTool.BlackWhite -> listOf(snapEffect(SnapEffect.BlackWhite, "black-white", R.string.fossin_black_white))
+        EditorTool.Noir -> listOf(snapEffect(SnapEffect.Noir, "noir", R.string.fossin_noir))
+        EditorTool.Portrait -> listOf(snapEffect(SnapEffect.Portrait, "portrait", R.string.fossin_portrait))
+        EditorTool.FaceEnhance -> listOf(
+            parameter("face-spotlight", R.string.fossin_face_spotlight, state.portraitSpotlight, 0f..1f) { editor, value -> editor.copy(portraitSpotlight = value) },
+            parameter("face-smoothing", R.string.fossin_skin_smoothing, state.portraitSmoothing, 0f..1f) { editor, value -> editor.copy(portraitSmoothing = value) },
+            parameter("face-eye-clarity", R.string.fossin_eye_clarity, state.portraitEyeClarity, 0f..1f) { editor, value -> editor.copy(portraitEyeClarity = value) },
+        )
+        EditorTool.HeadPose -> listOf(
+            parameter("head-pose-horizontal", R.string.fossin_horizontal, state.headPoseHorizontal, -1f..1f) { editor, value -> editor.copy(headPoseHorizontal = value) },
+            parameter("head-pose-vertical", R.string.fossin_vertical, state.headPoseVertical, -1f..1f) { editor, value -> editor.copy(headPoseVertical = value) },
+            parameter("head-pose-tilt", R.string.fossin_tilt, state.headPoseTilt, -1f..1f) { editor, value -> editor.copy(headPoseTilt = value) },
+        )
+        EditorTool.Frame -> listOf(parameter("frame-width", R.string.fossin_frame_width, state.frameWidth, 0f..1f) { editor, value -> editor.copy(frameWidth = value) })
+        EditorTool.DoubleExposure -> if (!hasOverlay) emptyList() else listOf(
+            parameter("double-exposure-opacity", R.string.fossin_opacity, state.overlayAlpha, 0f..1f) { editor, value -> editor.copy(overlayAlpha = value) },
+        )
+        EditorTool.Text -> listOf(
+            parameter("text-size", R.string.fossin_text_size, state.textSize, 0.03f..0.2f) { editor, value -> editor.copy(textSize = value) },
+            parameter("text-opacity", R.string.fossin_opacity, state.textOpacity, 0f..1f) { editor, value -> editor.copy(textOpacity = value) },
+            parameter("text-rotation", R.string.fossin_rotate, state.textRotation, -1f..1f) { editor, value -> editor.copy(textRotation = value) },
+        )
+    }
+}
+
 @Composable
 private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: () -> Unit) {
     val context = LocalContext.current
@@ -678,6 +897,16 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
     var gestureBase by remember { mutableStateOf<EditorState?>(null) }
     var cropDragStart by remember { mutableStateOf<NormalizedPoint?>(null) }
     var selectiveDragIndex by remember { mutableStateOf<Int?>(null) }
+    val gesturePreferences = remember(context) {
+        context.applicationContext.getSharedPreferences(FOSSIN_EDITOR_PREFERENCES, Context.MODE_PRIVATE)
+    }
+    var gestureModeEnabled by remember {
+        mutableStateOf(gesturePreferences.getBoolean(FOSSIN_GESTURE_MODE_ENABLED, true))
+    }
+    var selectedGestureParameterKey by rememberSaveable { mutableStateOf<String?>(null) }
+    var selectedHslChannel by remember { mutableStateOf(HslChannel.Red) }
+    var showGestureFeedback by remember { mutableStateOf(false) }
+    var gestureFeedbackToken by remember { mutableStateOf(0) }
     val processor = remember { LutImageProcessor(context.applicationContext) }
     fun updateEdit(transform: (EditorState) -> EditorState) {
         val next = transform(editState)
@@ -965,6 +1194,26 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
 
     BackHandler { onFinish() }
     val currentEditState by rememberUpdatedState(editState)
+    val gestureParameters = snapseedGestureParameters(tool, editState, selectedHslChannel, overlay != null)
+    val activeGestureParameter = gestureParameters.firstOrNull { it.key == selectedGestureParameterKey }
+        ?: gestureParameters.firstOrNull()
+    val currentGestureParameters by rememberUpdatedState(gestureParameters)
+    val currentSelectedGestureParameterKey by rememberUpdatedState(selectedGestureParameterKey)
+    fun refreshGestureFeedback() {
+        showGestureFeedback = true
+        gestureFeedbackToken += 1
+    }
+    fun setGestureMode(enabled: Boolean) {
+        gestureModeEnabled = enabled
+        gesturePreferences.edit().putBoolean(FOSSIN_GESTURE_MODE_ENABLED, enabled).apply()
+        if (!enabled) showGestureFeedback = false
+    }
+    LaunchedEffect(gestureFeedbackToken) {
+        if (gestureFeedbackToken == 0) return@LaunchedEffect
+        val token = gestureFeedbackToken
+        delay(1500)
+        if (gestureFeedbackToken == token) showGestureFeedback = false
+    }
     val image = if (showOriginal || (tool == EditorTool.Crop && editState.cropMode == CropMode.Free)) source else rendered ?: source
     Surface(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(), color = Color(0xFF0B0B0C)) {
         Column(Modifier.fillMaxSize()) {
@@ -987,88 +1236,156 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
                     .weight(1f)
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp)
-                    .pointerInput(tool, editState.cropMode) {
+                    .pointerInput(tool, editState.cropMode, gestureModeEnabled, source != null) {
                         val cropGesture = tool == EditorTool.Crop && editState.cropMode == CropMode.Free
                         val selectiveGesture = tool == EditorTool.Selective
                         val lensBlurGesture = tool == EditorTool.LensBlur
-                        if (tool != EditorTool.Brush && tool != EditorTool.Healing && !cropGesture && !selectiveGesture && !lensBlurGesture) return@pointerInput
-                        detectDragGestures(
-                            onDragStart = { offset ->
-                                val point = normalizedPoint(offset, size.width.toFloat(), size.height.toFloat(), if (cropGesture) source else image)
-                                when {
-                                    tool == EditorTool.Brush -> addBrushPoint(point, start = true)
-                                    tool == EditorTool.Healing -> addHealingPoint(point, start = true)
-                                    selectiveGesture -> {
-                                        beginGesture()
-                                        val existing = currentEditState.selectivePoints
-                                        if (existing.isEmpty()) {
-                                            selectiveDragIndex = 0
+                        val supportsGestureMode = gestureModeEnabled && source != null && currentGestureParameters.isNotEmpty()
+                        if (supportsGestureMode) {
+                            var axis: SnapseedGestureAxis? = null
+                            var totalHorizontal = 0f
+                            var totalVertical = 0f
+                            var horizontalStartValue = 0f
+                            var horizontalParameter: GestureParameter? = null
+                            detectDragGestures(
+                                onDragStart = {
+                                    axis = null
+                                    totalHorizontal = 0f
+                                    totalVertical = 0f
+                                    horizontalParameter = null
+                                },
+                                onDrag = { change, dragAmount ->
+                                    totalHorizontal += dragAmount.x
+                                    totalVertical += dragAmount.y
+                                    if (axis == null) {
+                                        val touchSlop = GESTURE_TOUCH_SLOP_DP.dp.toPx()
+                                        if (maxOf(kotlin.math.abs(totalHorizontal), kotlin.math.abs(totalVertical)) < touchSlop) {
+                                            return@detectDragGestures
+                                        }
+                                        if (kotlin.math.abs(totalVertical) > kotlin.math.abs(totalHorizontal)) {
+                                            axis = SnapseedGestureAxis.Vertical
+                                            val parameters = currentGestureParameters
+                                            val currentIndex = parameters.indexOfFirst { it.key == currentSelectedGestureParameterKey }
+                                                .takeIf { it >= 0 } ?: 0
+                                            val direction = if (totalVertical < 0f) {
+                                                SnapseedParameterDirection.Next
+                                            } else {
+                                                SnapseedParameterDirection.Previous
+                                            }
+                                            selectedGestureParameterKey = parameters[
+                                                snapseedParameterIndex(currentIndex, parameters.size, direction)
+                                            ].key
+                                            refreshGestureFeedback()
+                                        } else {
+                                            axis = SnapseedGestureAxis.Horizontal
+                                            horizontalParameter = currentGestureParameters.firstOrNull {
+                                                it.key == currentSelectedGestureParameterKey
+                                            } ?: currentGestureParameters.first()
+                                            horizontalStartValue = horizontalParameter?.value ?: 0f
+                                            beginGesture()
+                                        }
+                                    }
+                                    if (axis == SnapseedGestureAxis.Horizontal) {
+                                        horizontalParameter?.let { parameter ->
+                                            val value = snapseedAdjustedValue(
+                                                startValue = horizontalStartValue,
+                                                range = parameter.range,
+                                                horizontalDistancePx = totalHorizontal,
+                                                fullRangeDistancePx = GESTURE_FULL_RANGE_DP.dp.toPx(),
+                                            )
+                                            previewEdit { state -> parameter.update(state, value) }
+                                            refreshGestureFeedback()
+                                        }
+                                    }
+                                    change.consume()
+                                },
+                                onDragEnd = {
+                                    if (axis == SnapseedGestureAxis.Horizontal) finishGesture()
+                                },
+                                onDragCancel = {
+                                    if (axis == SnapseedGestureAxis.Horizontal) finishGesture()
+                                },
+                            )
+                        } else {
+                            if (tool != EditorTool.Brush && tool != EditorTool.Healing && !cropGesture && !selectiveGesture && !lensBlurGesture) return@pointerInput
+                            detectDragGestures(
+                                onDragStart = { offset ->
+                                    val point = normalizedPoint(offset, size.width.toFloat(), size.height.toFloat(), if (cropGesture) source else image)
+                                    when {
+                                        tool == EditorTool.Brush -> addBrushPoint(point, start = true)
+                                        tool == EditorTool.Healing -> addHealingPoint(point, start = true)
+                                        selectiveGesture -> {
+                                            beginGesture()
+                                            val existing = currentEditState.selectivePoints
+                                            if (existing.isEmpty()) {
+                                                selectiveDragIndex = 0
+                                                previewEdit { state ->
+                                                    state.copy(
+                                                        selectiveX = point.x,
+                                                        selectiveY = point.y,
+                                                        selectivePoints = listOf(SelectivePoint(point.x, point.y, state.selectiveRadius, state.selectiveExposure, state.selectiveContrast, state.selectiveSaturation, state.selectiveStructure)),
+                                                    )
+                                                }
+                                            } else {
+                                                selectiveDragIndex = existing.indices.minByOrNull { index ->
+                                                    val candidate = existing[index]
+                                                    val dx = candidate.x - point.x
+                                                    val dy = candidate.y - point.y
+                                                    dx * dx + dy * dy
+                                                }
+                                            }
+                                        }
+                                        lensBlurGesture -> {
+                                            beginGesture()
+                                            previewEdit { state -> state.copy(lensBlurX = point.x, lensBlurY = point.y) }
+                                        }
+                                        cropGesture -> {
+                                            beginGesture()
+                                            cropDragStart = point
+                                        }
+                                    }
+                                },
+                                onDrag = { change, _ ->
+                                    change.consume()
+                                    val point = normalizedPoint(change.position, size.width.toFloat(), size.height.toFloat(), if (cropGesture) source else image)
+                                    when {
+                                        tool == EditorTool.Brush -> addBrushPoint(point)
+                                        tool == EditorTool.Healing -> addHealingPoint(point)
+                                        selectiveGesture -> selectiveDragIndex?.let { selectedIndex ->
+                                            previewEdit { state ->
+                                                val points = state.selectivePoints.toMutableList()
+                                                if (selectedIndex in points.indices) {
+                                                    points[selectedIndex] = points[selectedIndex].copy(x = point.x, y = point.y)
+                                                    state.copy(selectiveX = point.x, selectiveY = point.y, selectivePoints = points)
+                                                } else state.copy(selectiveX = point.x, selectiveY = point.y)
+                                            }
+                                        }
+                                        lensBlurGesture -> previewEdit { state -> state.copy(lensBlurX = point.x, lensBlurY = point.y) }
+                                        cropGesture -> cropDragStart?.let { start ->
                                             previewEdit { state ->
                                                 state.copy(
-                                                    selectiveX = point.x,
-                                                    selectiveY = point.y,
-                                                    selectivePoints = listOf(SelectivePoint(point.x, point.y, state.selectiveRadius, state.selectiveExposure, state.selectiveContrast, state.selectiveSaturation, state.selectiveStructure)),
+                                                    cropMode = CropMode.Free,
+                                                    cropLeft = minOf(start.x, point.x),
+                                                    cropTop = minOf(start.y, point.y),
+                                                    cropRight = maxOf(start.x, point.x),
+                                                    cropBottom = maxOf(start.y, point.y),
                                                 )
                                             }
-                                        } else {
-                                            selectiveDragIndex = existing.indices.minByOrNull { index ->
-                                                val candidate = existing[index]
-                                                val dx = candidate.x - point.x
-                                                val dy = candidate.y - point.y
-                                                dx * dx + dy * dy
-                                            }
                                         }
                                     }
-                                    lensBlurGesture -> {
-                                        beginGesture()
-                                        previewEdit { state -> state.copy(lensBlurX = point.x, lensBlurY = point.y) }
-                                    }
-                                    cropGesture -> {
-                                        beginGesture()
-                                        cropDragStart = point
-                                    }
-                                }
-                            },
-                            onDrag = { change, _ ->
-                                change.consume()
-                                val point = normalizedPoint(change.position, size.width.toFloat(), size.height.toFloat(), if (cropGesture) source else image)
-                                when {
-                                    tool == EditorTool.Brush -> addBrushPoint(point)
-                                    tool == EditorTool.Healing -> addHealingPoint(point)
-                                    selectiveGesture -> selectiveDragIndex?.let { selectedIndex ->
-                                        previewEdit { state ->
-                                            val points = state.selectivePoints.toMutableList()
-                                            if (selectedIndex in points.indices) {
-                                                points[selectedIndex] = points[selectedIndex].copy(x = point.x, y = point.y)
-                                                state.copy(selectiveX = point.x, selectiveY = point.y, selectivePoints = points)
-                                            } else state.copy(selectiveX = point.x, selectiveY = point.y)
-                                        }
-                                    }
-                                    lensBlurGesture -> previewEdit { state -> state.copy(lensBlurX = point.x, lensBlurY = point.y) }
-                                    cropGesture -> cropDragStart?.let { start ->
-                                        previewEdit { state ->
-                                            state.copy(
-                                                cropMode = CropMode.Free,
-                                                cropLeft = minOf(start.x, point.x),
-                                                cropTop = minOf(start.y, point.y),
-                                                cropRight = maxOf(start.x, point.x),
-                                                cropBottom = maxOf(start.y, point.y),
-                                            )
-                                        }
-                                    }
-                                }
-                            },
-                            onDragEnd = {
-                                cropDragStart = null
-                                selectiveDragIndex = null
-                                finishGesture()
-                            },
-                            onDragCancel = {
-                                cropDragStart = null
-                                selectiveDragIndex = null
-                                finishGesture()
-                            },
-                        )
+                                },
+                                onDragEnd = {
+                                    cropDragStart = null
+                                    selectiveDragIndex = null
+                                    finishGesture()
+                                },
+                                onDragCancel = {
+                                    cropDragStart = null
+                                    selectiveDragIndex = null
+                                    finishGesture()
+                                },
+                            )
+                        }
                     },
                 contentAlignment = Alignment.Center,
             ) {
@@ -1131,6 +1448,29 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
                         drawLine(Color.White, Offset(left, bottom), Offset(left, top), strokeWidth = 3f)
                     }
                 }
+                if (source != null) {
+                    FilterChip(
+                        selected = gestureModeEnabled,
+                        onClick = { setGestureMode(!gestureModeEnabled) },
+                        label = {
+                            Text(
+                                text = stringResource(
+                                    if (gestureModeEnabled) R.string.fossin_gestures_on else R.string.fossin_gestures_off,
+                                    ),
+                                fontSize = 11.sp,
+                            )
+                        },
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(12.dp),
+                    )
+                }
+                if (showGestureFeedback && gestureModeEnabled && activeGestureParameter != null) {
+                    GestureFeedback(
+                        parameter = activeGestureParameter,
+                        modifier = Modifier.align(Alignment.Center),
+                    )
+                }
                 if (isRendering || isExporting) LinearProgressIndicator(Modifier.align(Alignment.BottomCenter).fillMaxWidth(0.75f))
             }
             if (source != null) {
@@ -1147,7 +1487,7 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
                 EditorTool.Perspective -> PerspectivePanel(editState.perspectiveHorizontal, editState.perspectiveVertical, editState.perspectiveRotate, editState.perspectiveScale, { value -> updateEdit { it.copy(perspectiveHorizontal = value) } }, { value -> updateEdit { it.copy(perspectiveVertical = value) } }, { value -> updateEdit { it.copy(perspectiveRotate = value) } }, { value -> updateEdit { it.copy(perspectiveScale = value) } })
                 EditorTool.Rotate -> RotatePanel(editState.rotation, editState.rotationFine, { value -> updateEdit { it.copy(rotation = value) } }, { value -> updateEdit { it.copy(rotationFine = value) } })
                 EditorTool.Color -> ColorPanel(editState.tint, editState.fade, editState.vibrance, { value -> updateEdit { it.copy(tint = value) } }, { value -> updateEdit { it.copy(fade = value) } }, { value -> updateEdit { it.copy(vibrance = value) } })
-                EditorTool.Hsl -> HslPanel(editState.hsl) { value -> updateEdit { it.copy(hsl = value(it.hsl)) } }
+                EditorTool.Hsl -> HslPanel(editState.hsl, selectedHslChannel, { selectedHslChannel = it }) { value -> updateEdit { it.copy(hsl = value(it.hsl)) } }
                 EditorTool.Selective -> SelectivePanel(editState, { updateEdit { state ->
                     val point = SelectivePoint(state.selectiveX, state.selectiveY, state.selectiveRadius, state.selectiveExposure, state.selectiveContrast, state.selectiveSaturation, state.selectiveStructure)
                     state.copy(selectivePoints = state.selectivePoints + point)
@@ -1276,6 +1616,28 @@ private fun EmptyEditor(onImport: () -> Unit, onOpenCamera: () -> Unit) {
             Button(onClick = onImport, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF6B35))) { Text(stringResource(R.string.fossin_import)) }
             TextButton(onClick = onOpenCamera) { Text(stringResource(R.string.fossin_open_camera), color = Color.White) }
         }
+    }
+}
+
+@Composable
+private fun GestureFeedback(parameter: GestureParameter, modifier: Modifier = Modifier) {
+    Column(
+        modifier
+            .clip(RoundedCornerShape(14.dp))
+            .background(Color(0xE61B1B20))
+            .padding(horizontal = 20.dp, vertical = 12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(
+            text = stringResource(parameter.labelRes),
+            color = Color.White,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            text = stringResource(R.string.fossin_gesture_percent, snapseedValuePercent(parameter.value, parameter.range)),
+            color = Color(0xFFFFB08E),
+            fontSize = 22.sp,
+        )
     }
 }
 
@@ -1556,9 +1918,10 @@ private fun ColorPanel(tint: Float, fade: Float, vibrance: Float, onTint: (Float
 @Composable
 private fun HslPanel(
     values: Map<HslChannel, HslValue>,
+    selected: HslChannel,
+    onSelected: (HslChannel) -> Unit,
     onChange: (((Map<HslChannel, HslValue>) -> Map<HslChannel, HslValue>)) -> Unit,
 ) {
-    var selected by remember { mutableStateOf(HslChannel.Red) }
     val value = values[selected] ?: HslValue()
     val label = when (selected) {
         HslChannel.Red -> stringResource(R.string.recipe_param_red_hue).substringBeforeLast(' ')
@@ -1584,7 +1947,7 @@ private fun HslPanel(
                     HslChannel.Purple -> stringResource(R.string.recipe_param_purple_hue).substringBeforeLast(' ')
                     HslChannel.Magenta -> stringResource(R.string.recipe_param_magenta_hue).substringBeforeLast(' ')
                 }
-                FilterChip(selected = selected == channel, onClick = { selected = channel }, label = { Text(channelLabel, fontSize = 11.sp) })
+                FilterChip(selected = selected == channel, onClick = { onSelected(channel) }, label = { Text(channelLabel, fontSize = 11.sp) })
             }
         }
         Text(text = label, color = Color(0xFF9B9BA1), fontSize = 12.sp)
