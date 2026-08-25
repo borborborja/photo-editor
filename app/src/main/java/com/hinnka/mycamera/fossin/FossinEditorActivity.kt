@@ -146,6 +146,8 @@ private const val FOSSIN_EDITOR_PREFERENCES = "fossin_editor_preferences"
 private const val FOSSIN_GESTURE_MODE_ENABLED = "gesture_mode_enabled"
 private const val GESTURE_TOUCH_SLOP_DP = 14f
 private const val GESTURE_FULL_RANGE_DP = 240f
+private const val GESTURE_PARAMETER_STEP_DP = 52f
+private const val GESTURE_PREVIEW_MAX_EDGE = 1024
 
 internal enum class SnapseedParameterDirection { Previous, Next }
 
@@ -161,6 +163,18 @@ internal fun snapseedParameterIndex(
         SnapseedParameterDirection.Previous -> (current - 1).coerceAtLeast(0)
         SnapseedParameterDirection.Next -> (current + 1).coerceAtMost(parameterCount - 1)
     }
+}
+
+/** Maps a continuous vertical drag to an item in the visible parameter list. */
+internal fun snapseedParameterIndexForDrag(
+    startIndex: Int,
+    parameterCount: Int,
+    verticalDistancePx: Float,
+    stepDistancePx: Float,
+): Int {
+    if (parameterCount <= 0) return 0
+    val steps = (verticalDistancePx / stepDistancePx.coerceAtLeast(1f)).roundToInt()
+    return (startIndex - steps).coerceIn(0, parameterCount - 1)
 }
 
 internal fun snapseedAdjustedValue(
@@ -908,6 +922,16 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
     var showGestureFeedback by remember { mutableStateOf(false) }
     var gestureFeedbackToken by remember { mutableStateOf(0) }
     val processor = remember { LutImageProcessor(context.applicationContext) }
+    val gesturePreview = remember(source) {
+        source?.let { bitmap -> scaledPreviewBitmap(bitmap, GESTURE_PREVIEW_MAX_EDGE) }
+    }
+    DisposableEffect(gesturePreview, source) {
+        onDispose {
+            if (gesturePreview != null && gesturePreview !== source && !gesturePreview.isRecycled) {
+                gesturePreview.recycle()
+            }
+        }
+    }
     fun updateEdit(transform: (EditorState) -> EditorState) {
         val next = transform(editState)
         if (next == editState) return
@@ -1177,12 +1201,14 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
             restored.recycle()
         }
     }
-    LaunchedEffect(source, editState, overlay, renderVersion) {
+    LaunchedEffect(source, editState, overlay, renderVersion, gestureBase != null) {
         val input = source ?: return@LaunchedEffect
+        val useFastPreview = gestureBase != null && gesturePreview != null
+        if (useFastPreview) delay(24)
         isRendering = true
         rendered = withContext(Dispatchers.Default) {
             try {
-                renderEditorBitmap(processor, input, editState, overlay)
+                renderEditorBitmap(processor, if (useFastPreview) gesturePreview!! else input, editState, overlay)
             } catch (cancellation: CancellationException) {
                 throw cancellation
             } catch (_: Throwable) {
@@ -1247,6 +1273,7 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
                             var totalVertical = 0f
                             var horizontalStartValue = 0f
                             var horizontalParameter: GestureParameter? = null
+                            var verticalStartIndex = 0
                             detectDragGestures(
                                 onDragStart = {
                                     axis = null
@@ -1265,16 +1292,9 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
                                         if (kotlin.math.abs(totalVertical) > kotlin.math.abs(totalHorizontal)) {
                                             axis = SnapseedGestureAxis.Vertical
                                             val parameters = currentGestureParameters
-                                            val currentIndex = parameters.indexOfFirst { it.key == currentSelectedGestureParameterKey }
+                                            verticalStartIndex = parameters.indexOfFirst { it.key == currentSelectedGestureParameterKey }
                                                 .takeIf { it >= 0 } ?: 0
-                                            val direction = if (totalVertical < 0f) {
-                                                SnapseedParameterDirection.Next
-                                            } else {
-                                                SnapseedParameterDirection.Previous
-                                            }
-                                            selectedGestureParameterKey = parameters[
-                                                snapseedParameterIndex(currentIndex, parameters.size, direction)
-                                            ].key
+                                            selectedGestureParameterKey = parameters[verticalStartIndex].key
                                             refreshGestureFeedback()
                                         } else {
                                             axis = SnapseedGestureAxis.Horizontal
@@ -1294,6 +1314,13 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
                                                 fullRangeDistancePx = GESTURE_FULL_RANGE_DP.dp.toPx(),
                                             )
                                             previewEdit { state -> parameter.update(state, value) }
+                                            refreshGestureFeedback()
+                                        }
+                                    } else if (axis == SnapseedGestureAxis.Vertical) {
+                                        val parameters = currentGestureParameters
+                                        if (parameters.isNotEmpty()) {
+                                            val index = snapseedParameterIndexForDrag(verticalStartIndex, parameters.size, totalVertical, GESTURE_PARAMETER_STEP_DP.dp.toPx())
+                                            selectedGestureParameterKey = parameters[index].key
                                             refreshGestureFeedback()
                                         }
                                     }
@@ -1467,7 +1494,8 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
                 }
                 if (showGestureFeedback && gestureModeEnabled && activeGestureParameter != null) {
                     GestureFeedback(
-                        parameter = activeGestureParameter,
+                        parameters = gestureParameters,
+                        selectedKey = activeGestureParameter.key,
                         modifier = Modifier.align(Alignment.Center),
                     )
                 }
@@ -1620,24 +1648,24 @@ private fun EmptyEditor(onImport: () -> Unit, onOpenCamera: () -> Unit) {
 }
 
 @Composable
-private fun GestureFeedback(parameter: GestureParameter, modifier: Modifier = Modifier) {
+private fun GestureFeedback(parameters: List<GestureParameter>, selectedKey: String, modifier: Modifier = Modifier) {
     Column(
         modifier
             .clip(RoundedCornerShape(14.dp))
             .background(Color(0xE61B1B20))
             .padding(horizontal = 20.dp, vertical = 12.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
+        horizontalAlignment = Alignment.Start,
     ) {
-        Text(
-            text = stringResource(parameter.labelRes),
-            color = Color.White,
-            fontWeight = FontWeight.SemiBold,
-        )
-        Text(
-            text = stringResource(R.string.fossin_gesture_percent, snapseedValuePercent(parameter.value, parameter.range)),
-            color = Color(0xFFFFB08E),
-            fontSize = 22.sp,
-        )
+        parameters.forEach { parameter ->
+            val selected = parameter.key == selectedKey
+            Row(
+                modifier = Modifier.fillMaxWidth().background(if (selected) Color(0xFFFFB000) else Color.Transparent).padding(horizontal = 10.dp, vertical = 5.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(text = stringResource(parameter.labelRes), color = if (selected) Color.Black else Color.White, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal)
+                Text(text = "${snapseedValuePercent(parameter.value, parameter.range)}", color = if (selected) Color.Black else Color.White)
+            }
+        }
     }
 }
 
@@ -3099,6 +3127,13 @@ private fun applyText(
 private suspend fun loadImage(context: android.content.Context, uri: Uri, onLoaded: (Bitmap) -> Unit) {
     val bitmap = runCatching { loadBitmap(context, uri, maxEdge = 2048) }.getOrNull()
     if (bitmap != null) onLoaded(bitmap)
+}
+
+private fun scaledPreviewBitmap(bitmap: Bitmap, maxEdge: Int): Bitmap {
+    val largest = maxOf(bitmap.width, bitmap.height)
+    if (largest <= maxEdge) return bitmap
+    val scale = maxEdge.toFloat() / largest
+    return Bitmap.createScaledBitmap(bitmap, (bitmap.width * scale).roundToInt(), (bitmap.height * scale).roundToInt(), true)
 }
 
 private suspend fun loadBitmap(context: android.content.Context, uri: Uri, maxEdge: Int): Bitmap? = withContext(Dispatchers.IO) {

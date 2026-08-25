@@ -28,6 +28,13 @@ class SnapseedGestureTest {
     }
 
     @Test
+    fun verticalDragCanNavigateSeveralParametersWithoutLiftingTheFinger() {
+        assertEquals(3, snapseedParameterIndexForDrag(1, 5, -104f, 52f))
+        assertEquals(0, snapseedParameterIndexForDrag(1, 5, 500f, 52f))
+        assertEquals(4, snapseedParameterIndexForDrag(3, 5, -500f, 52f))
+    }
+
+    @Test
     fun feedbackPercentageIsAlwaysNormalized() {
         assertEquals(0, snapseedValuePercent(-2f, -2f..2f))
         assertEquals(50, snapseedValuePercent(0f, -2f..2f))
