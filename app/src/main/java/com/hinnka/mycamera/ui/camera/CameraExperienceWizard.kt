@@ -149,12 +149,12 @@ fun ProExperienceSwitcher(
         modifier = modifier
             .wrapContentWidth()
             .clickable(enabled = enabled, onClick = onSwitchToBeginner),
-        color = Color.Black.copy(alpha = 0.56f),
+        color = Color.Black.copy(alpha = if (enabled) 0.56f else 0.28f),
         shape = RoundedCornerShape(18.dp),
     ) {
         Text(
             text = stringResource(R.string.camera_experience_beginner_switch),
-            color = Color.White,
+            color = Color.White.copy(alpha = if (enabled) 1f else 0.5f),
             style = MaterialTheme.typography.labelLarge,
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
         )

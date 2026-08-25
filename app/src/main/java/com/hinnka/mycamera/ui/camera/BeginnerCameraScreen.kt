@@ -16,6 +16,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -25,6 +27,7 @@ import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -48,6 +51,7 @@ import androidx.lifecycle.compose.LifecycleEventEffect
 import com.hinnka.mycamera.R
 import com.hinnka.mycamera.model.BeginnerSimulation
 import com.hinnka.mycamera.model.ColorRecipeParams
+import com.hinnka.mycamera.model.availableBeginnerZoomStops
 import com.hinnka.mycamera.ui.components.GalleryThumbnail
 import com.hinnka.mycamera.ui.icons.AppIcons
 import com.hinnka.mycamera.viewmodel.CameraViewModel
@@ -105,6 +109,12 @@ fun BeginnerCameraScreen(
     val currentCameraId = state.currentCameraId
     val calibrationOffset by viewModel.getCameraOrientationOffset(currentCameraId)
         .collectAsState(initial = 0)
+    val currentCamera = state.getCurrentCameraInfo()
+    val displayIntrinsicZoom = currentCamera?.displayIntrinsicZoomRatio
+        ?.takeIf { it > 0f }
+        ?: 1f
+    val minimumVisibleZoom = (currentCamera?.minZoom ?: 1f) * displayIntrinsicZoom
+    val maximumVisibleZoom = (currentCamera?.maxZoom ?: 1f) * displayIntrinsicZoom
 
     Box(
         modifier = modifier
@@ -193,11 +203,9 @@ fun BeginnerCameraScreen(
             Spacer(Modifier.height(14.dp))
             BeginnerZoomRow(
                 zoomRatio = viewModel.zoomRatioByMain,
-                onZoomSelected = { zoom ->
-                    viewModel.setZoomRatio(
-                        zoom.coerceIn(viewModel.globalMinZoom, viewModel.globalMaxZoom)
-                    )
-                },
+                minimumZoom = minimumVisibleZoom,
+                maximumZoom = maximumVisibleZoom,
+                onZoomSelected = viewModel::setZoomRatio,
             )
             Spacer(Modifier.height(14.dp))
             Row(
@@ -212,6 +220,7 @@ fun BeginnerCameraScreen(
                 )
 
                 BeginnerShutterButton(
+                    isCapturing = state.isCapturing,
                     enabled = !state.isCapturing && state.captureMode == CaptureMode.PHOTO,
                     onCapture = viewModel::capture,
                 )
@@ -241,7 +250,9 @@ fun BeginnerCameraScreen(
                 )
                 Text(
                     text = stringResource(R.string.camera_experience_pro_switch),
-                    color = MaterialTheme.colorScheme.primary,
+                    color = MaterialTheme.colorScheme.primary.copy(
+                        alpha = if (canSwitchToPro) 1f else 0.45f,
+                    ),
                     fontWeight = FontWeight.SemiBold,
                     fontSize = 14.sp,
                     modifier = Modifier
@@ -263,7 +274,8 @@ private fun BeginnerTopBar(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .padding(top = 36.dp, start = 14.dp, end = 14.dp),
+            .statusBarsPadding()
+            .padding(top = 12.dp, start = 14.dp, end = 14.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -278,16 +290,21 @@ private fun BeginnerTopBar(
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
             )
         }
-        IconButton(onClick = onFlashToggle) {
-            Icon(
-                imageVector = when (flashMode) {
-                    0 -> AppIcons.FlashOff
-                    1 -> AppIcons.FlashOn
-                    else -> AppIcons.FlashlightOn
-                },
-                contentDescription = stringResource(R.string.flash),
-                tint = Color.White,
-            )
+        Surface(
+            color = Color.Black.copy(alpha = 0.46f),
+            shape = CircleShape,
+        ) {
+            IconButton(onClick = onFlashToggle) {
+                Icon(
+                    imageVector = when (flashMode) {
+                        0 -> AppIcons.FlashOff
+                        1 -> AppIcons.FlashOn
+                        else -> AppIcons.FlashlightOn
+                    },
+                    contentDescription = stringResource(R.string.flash),
+                    tint = Color.White,
+                )
+            }
         }
     }
 }
@@ -335,24 +352,39 @@ private fun BeginnerSimulationRow(
 @Composable
 private fun BeginnerZoomRow(
     zoomRatio: Float,
+    minimumZoom: Float,
+    maximumZoom: Float,
     onZoomSelected: (Float) -> Unit,
 ) {
-    val stops = listOf(0.5f, 1f, 2f)
+    val stops = availableBeginnerZoomStops(minimumZoom, maximumZoom)
+    if (stops.size <= 1) return
+
     Row(
         horizontalArrangement = Arrangement.spacedBy(16.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         stops.forEach { zoom ->
             val selected = kotlin.math.abs(zoomRatio - zoom) < 0.12f
-            Text(
-                text = formatZoomRatioLabel(zoom),
-                color = if (selected) MaterialTheme.colorScheme.primary else Color.White,
-                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+            Surface(
                 modifier = Modifier
+                    .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
                     .clip(CircleShape)
-                    .clickable { onZoomSelected(zoom) }
-                    .padding(horizontal = 8.dp, vertical = 4.dp),
-            )
+                    .clickable { onZoomSelected(zoom) },
+                color = if (selected) {
+                    MaterialTheme.colorScheme.primary.copy(alpha = 0.92f)
+                } else {
+                    Color.Black.copy(alpha = 0.46f)
+                },
+                shape = CircleShape,
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text(
+                        text = formatZoomRatioLabel(zoom),
+                        color = if (selected) MaterialTheme.colorScheme.onPrimary else Color.White,
+                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                    )
+                }
+            }
         }
     }
 }
@@ -360,6 +392,7 @@ private fun BeginnerZoomRow(
 @Composable
 private fun BeginnerShutterButton(
     enabled: Boolean,
+    isCapturing: Boolean,
     onCapture: () -> Unit,
 ) {
     Surface(
@@ -372,12 +405,20 @@ private fun BeginnerShutterButton(
         contentColor = Color.Black,
     ) {
         Box(contentAlignment = Alignment.Center) {
-            Surface(
-                modifier = Modifier.size(62.dp),
-                color = Color.Transparent,
-                shape = CircleShape,
-                border = androidx.compose.foundation.BorderStroke(3.dp, Color.Black),
-            ) {}
+            if (isCapturing) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(34.dp),
+                    color = Color.Black,
+                    strokeWidth = 3.dp,
+                )
+            } else {
+                Surface(
+                    modifier = Modifier.size(62.dp),
+                    color = Color.Transparent,
+                    shape = CircleShape,
+                    border = androidx.compose.foundation.BorderStroke(3.dp, Color.Black),
+                ) {}
+            }
         }
     }
 }

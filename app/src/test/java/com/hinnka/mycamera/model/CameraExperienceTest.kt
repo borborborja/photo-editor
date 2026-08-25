@@ -26,4 +26,16 @@ class CameraExperienceTest {
         assertEquals(false, canChangeCameraExperience(isVideoRecording = false, isVideoProcessing = true))
         assertEquals(true, canChangeCameraExperience(isVideoRecording = false, isVideoProcessing = false))
     }
+
+    @Test
+    fun `beginner zoom only exposes stops supported by the active lens`() {
+        assertEquals(listOf(1f), availableBeginnerZoomStops(0.9f, 1.1f))
+        assertEquals(listOf(0.5f, 1f), availableBeginnerZoomStops(0.45f, 1.2f))
+        assertEquals(listOf(1f, 2f), availableBeginnerZoomStops(0.9f, 2.2f))
+    }
+
+    @Test
+    fun `beginner zoom retains a valid fallback for uncommon lens ranges`() {
+        assertEquals(listOf(2.5f), availableBeginnerZoomStops(2.5f, 4f))
+    }
 }

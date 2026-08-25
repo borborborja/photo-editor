@@ -23,6 +23,24 @@ fun canChangeCameraExperience(
 ): Boolean = !isVideoRecording && !isVideoProcessing
 
 /**
+ * Returns only the familiar zoom stops that the current lens can genuinely
+ * reach. A device with no ultra-wide or telephoto lens therefore never shows
+ * a control that will be silently clamped by Camera2.
+ */
+fun availableBeginnerZoomStops(
+    minimumZoom: Float,
+    maximumZoom: Float,
+): List<Float> {
+    val lowerBound = minimumZoom.coerceAtLeast(0.1f)
+    val upperBound = maximumZoom.coerceAtLeast(lowerBound)
+    val standardStops = listOf(0.5f, 1f, 2f).filter { stop ->
+        stop >= lowerBound - 0.05f && stop <= upperBound + 0.05f
+    }
+
+    return standardStops.ifEmpty { listOf(1f.coerceIn(lowerBound, upperBound)) }
+}
+
+/**
  * Small, built-in looks for the beginner camera.  They are color recipes, not
  * LUT files: no external LUT is loaded or embedded when one is selected.
  */
