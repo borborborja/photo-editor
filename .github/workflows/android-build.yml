@@ -82,7 +82,7 @@ jobs:
           "$AAPT" dump badging "$PREVIEW_APK" | grep -F "package: name='org.foss.photoeditor'"
           "$APKSIGNER" verify --verbose "$PREVIEW_APK"
           ! "$AAPT" dump permissions "$APK" | grep -E \
-            'android.permission.(INTERNET|ACCESS_NETWORK_STATE|READ_PHONE_STATE)'
+            'android.permission.(ACCESS_NETWORK_STATE|READ_PHONE_STATE)'
           ! unzip -l "$APK" | grep -E \
             'billingclient|play/services|firebase|bugly|crashlytics|com/google/android/gms|com/google/android/play'
           ! "$AAPT" dump xmltree "$APK" AndroidManifest.xml | grep -E \

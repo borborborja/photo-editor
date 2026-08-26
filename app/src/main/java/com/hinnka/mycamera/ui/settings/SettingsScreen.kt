@@ -885,7 +885,8 @@ fun SettingsScreen(
                 },
                 text = {
                     Text(
-                        text = stringResource(R.string.update_ready_message),
+                        text = stringResource(R.string.update_ready_message) + "\n\n" +
+                            stringResource(R.string.update_source_disclosure),
                         style = MaterialTheme.typography.bodyMedium
                     )
                 },
@@ -2543,7 +2544,7 @@ fun SettingsScreen(
                                     stringResource(
                                         R.string.settings_check_update_description,
                                         BuildConfig.VERSION_NAME
-                                    )
+                                    ) + " " + stringResource(R.string.update_source_disclosure)
                                 },
                                 onClick = {
                                     if (!isCheckingUpdate) {

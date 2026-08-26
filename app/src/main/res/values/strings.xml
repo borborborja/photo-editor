@@ -962,6 +962,7 @@
     <string name="update_failed">Update failed. Please try again later.</string>
     <string name="update_ready_title">Update Ready</string>
     <string name="update_ready_message">The update APK has been downloaded. Install it now?</string>
+    <string name="update_source_disclosure">This manually requested update comes from the project’s public GitHub release. Installing it bypasses F-Droid’s verification.</string>
     <string name="update_install_now">Install</string>
     <string name="update_install_permission_hint">Allow this app to install unknown apps, then tap Install again.</string>
     <string name="settings_default_focal_length">Default Focal Length</string>

@@ -577,7 +577,8 @@ private fun AppUpdateInstallPrompt() {
         },
         text = {
             Text(
-                text = stringResource(R.string.update_ready_message),
+                text = stringResource(R.string.update_ready_message) + "\n\n" +
+                    stringResource(R.string.update_source_disclosure),
                 style = MaterialTheme.typography.bodyMedium
             )
         },
