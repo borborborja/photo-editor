@@ -13,7 +13,7 @@
     <string name="fossin_library_import_action">Choose from device</string>
     <string name="fossin_library_imported_edited">Imported &amp; edited</string>
     <string name="fossin_library_camera_photos">Camera photos</string>
-    <string name="fossin_library_imported_empty">Imported and exported photos will appear here.</string>
+    <string name="fossin_library_imported_empty">Your editable projects and exported photos will appear here.</string>
     <string name="fossin_library_camera_empty">Photos taken with this camera will appear here.</string>
     <string name="fossin_library_loading">Loading your photos…</string>
     <string name="fossin_library_imported">Imported</string>
@@ -82,6 +82,14 @@
     <string name="fossin_tilt">Tilt</string>
     <string name="fossin_export_done">Photo exported.</string>
     <string name="fossin_export_failed">Could not export the photo.</string>
+    <string name="fossin_export_choice_title">Export photo</string>
+    <string name="fossin_export_choice_message">Keep the original and every editable layer on this device?</string>
+    <string name="fossin_export_keep_project">Export and keep project</string>
+    <string name="fossin_export_photo_only">Export photo only</string>
+    <string name="fossin_export_editable_package">Export editable package</string>
+    <string name="fossin_export_package_message">Includes the original, a JSON sidecar and imported LUT or overlay assets.</string>
+    <string name="fossin_export_package_done">Editable package exported.</string>
+    <string name="fossin_export_package_failed">Could not export the editable package.</string>
     <string name="fossin_share_failed">Could not prepare the photo for sharing.</string>
     <string name="fossin_midpoint">Midpoint</string>
     <string name="fossin_curve_rgb">RGB</string>

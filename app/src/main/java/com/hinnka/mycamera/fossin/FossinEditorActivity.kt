@@ -11,7 +11,9 @@ import android.graphics.Paint
 import android.graphics.Shader
 import android.net.Uri
 import android.os.Bundle
+import android.os.Parcel
 import android.provider.OpenableColumns
+import android.util.Base64
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
@@ -63,6 +65,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -80,6 +83,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.SaverScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
@@ -112,15 +116,25 @@ import com.hinnka.mycamera.lut.LutParser
 import com.hinnka.mycamera.model.ColorRecipeParams
 import com.hinnka.mycamera.ui.icons.AppIcons
 import com.hinnka.mycamera.ui.theme.PhotonCameraTheme
+import com.google.gson.GsonBuilder
+import com.google.gson.JsonArray
+import com.google.gson.JsonObject
+import com.google.gson.JsonParser
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.io.FileNotFoundException
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.util.UUID
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 import kotlin.math.roundToInt
 
 class FossinEditorActivity : ComponentActivity() {
@@ -231,6 +245,9 @@ private const val GESTURE_PREVIEW_MAX_EDGE = 1024
 private const val FOSSIN_LIBRARY_PREFERENCES = "fossin_library_preferences"
 private const val FOSSIN_LIBRARY_ENTRIES = "recent_entries"
 private const val FOSSIN_LIBRARY_MAX_ENTRIES = 72
+private const val FOSSIN_PROJECTS_DIRECTORY = "fossin-projects"
+private const val FOSSIN_PROJECT_MANIFEST_FILE = "photo-editor-sidecar.json"
+private const val FOSSIN_PROJECT_SCHEMA_VERSION = 1
 
 private enum class FossinLibraryKind(@StringRes val labelRes: Int) {
     Imported(R.string.fossin_library_imported),
@@ -243,7 +260,10 @@ private data class FossinLibraryItem(
     val kind: FossinLibraryKind,
     val timestamp: Long,
     val name: String? = null,
+    val projectId: String? = null,
 )
+
+private enum class FossinFlattenExportMode { KeepProject, PhotoOnly }
 
 /**
  * Small local-only index for photos the editor has opened or exported. Camera photos are
@@ -830,8 +850,300 @@ private val editorStateSaver = Saver<EditorState, Bundle>(
     },
 )
 
+private object FossinProjectSaverScope : SaverScope {
+    override fun canBeSaved(value: Any): Boolean = true
+}
+
 private inline fun <reified T : Enum<T>> enumOrDefault(value: String?, default: T): T =
     value?.let { runCatching { enumValueOf<T>(it) }.getOrNull() } ?: default
+
+private data class FossinProjectSummary(
+    val id: String,
+    val originalUri: Uri,
+    val originalSourceUri: String?,
+    val title: String,
+    val updatedAt: Long,
+)
+
+private data class FossinEditableProject(
+    val id: String,
+    val originalUri: Uri,
+    val state: EditorState,
+    val title: String,
+)
+
+/**
+ * Non-destructive project storage. Each project owns a local original and sidecar, so edits are
+ * still recoverable when the source document URI or an imported LUT is no longer available.
+ */
+private object FossinProjectStore {
+    private val gson = GsonBuilder().setPrettyPrinting().create()
+    private val writeMutex = Mutex()
+
+    fun newProjectId(): String = UUID.randomUUID().toString()
+
+    suspend fun save(
+        context: Context,
+        projectId: String,
+        sourceUri: Uri,
+        state: EditorState,
+    ): Boolean = writeMutex.withLock {
+        withContext(Dispatchers.IO) {
+        runCatching {
+            val directory = projectDirectory(context, projectId).apply { mkdirs() }
+            val previous = readManifest(directory)
+            val previousOriginalFile = previous?.stringOrNull("originalFile")
+            val previousOriginalSource = previous?.stringOrNull("originalSourceUri")
+            val originalExtension = extensionFor(context, sourceUri, "jpg")
+            val originalFileName = previousOriginalFile ?: "original.$originalExtension"
+            val originalFile = File(directory, originalFileName)
+            val sourceIsStoredOriginal = sourceUri.isSameLocalFile(originalFile)
+            if (!originalFile.isFile || (!sourceIsStoredOriginal && previousOriginalSource != sourceUri.toString())) {
+                copyUriToFile(context, sourceUri, originalFile)
+            }
+
+            val overlayFileName = syncAsset(
+                context = context,
+                directory = directory,
+                source = state.overlayUri,
+                previousSource = previous?.stringOrNull("overlaySourceUri"),
+                previousFile = previous?.stringOrNull("overlayFile"),
+                baseName = "overlay",
+                fallbackExtension = "jpg",
+            )
+            val lutFileName = syncAsset(
+                context = context,
+                directory = directory,
+                source = state.lutUri,
+                previousSource = previous?.stringOrNull("lutSourceUri"),
+                previousFile = previous?.stringOrNull("lutFile"),
+                baseName = "look",
+                fallbackExtension = "cube",
+            )
+            val storedState = state.copy(
+                lut = null,
+                overlayUri = overlayFileName?.let { Uri.fromFile(File(directory, it)).toString() },
+                lutUri = lutFileName?.let { Uri.fromFile(File(directory, it)).toString() },
+            )
+            val savedBundle = with(editorStateSaver) { FossinProjectSaverScope.save(storedState) } ?: Bundle()
+            val sidecar = JsonObject().apply {
+                addProperty("schemaVersion", FOSSIN_PROJECT_SCHEMA_VERSION)
+                addProperty("id", projectId)
+                addProperty("title", displayName(context, sourceUri))
+                addProperty("updatedAt", System.currentTimeMillis())
+                addProperty("originalFile", originalFileName)
+                addProperty("originalSourceUri", if (sourceIsStoredOriginal) previousOriginalSource else sourceUri.toString())
+                overlayFileName?.let { addProperty("overlayFile", it) }
+                state.overlayUri?.let { addProperty("overlaySourceUri", it) }
+                lutFileName?.let { addProperty("lutFile", it) }
+                state.lutUri?.let { addProperty("lutSourceUri", it) }
+                add("layers", bundleToJson(savedBundle))
+                addProperty("editorStatePayload", encodeBundle(savedBundle))
+            }
+            writeAtomically(File(directory, FOSSIN_PROJECT_MANIFEST_FILE), gson.toJson(sidecar))
+            true
+        }.getOrDefault(false)
+        }
+    }
+
+    suspend fun load(context: Context, projectId: String): FossinEditableProject? = withContext(Dispatchers.IO) {
+        val directory = projectDirectory(context, projectId)
+        val manifest = readManifest(directory) ?: return@withContext null
+        val originalFile = manifest.stringOrNull("originalFile")?.let { File(directory, it) }
+            ?.takeIf(File::isFile)
+            ?: return@withContext null
+        val bundle = manifest.stringOrNull("editorStatePayload")?.let(::decodeBundle)
+            ?: return@withContext null
+        val state = editorStateSaver.restore(bundle) ?: return@withContext null
+        FossinEditableProject(
+            id = projectId,
+            originalUri = Uri.fromFile(originalFile),
+            state = state,
+            title = manifest.stringOrNull("title") ?: originalFile.name,
+        )
+    }
+
+    suspend fun list(context: Context): List<FossinProjectSummary> = withContext(Dispatchers.IO) {
+        projectsRoot(context).listFiles()
+            ?.asSequence()
+            ?.filter(File::isDirectory)
+            ?.mapNotNull { directory ->
+                val manifest = readManifest(directory) ?: return@mapNotNull null
+                val originalFile = manifest.stringOrNull("originalFile")?.let { File(directory, it) }
+                    ?.takeIf(File::isFile)
+                    ?: return@mapNotNull null
+                FossinProjectSummary(
+                    id = directory.name,
+                    originalUri = Uri.fromFile(originalFile),
+                    originalSourceUri = manifest.stringOrNull("originalSourceUri"),
+                    title = manifest.stringOrNull("title") ?: originalFile.name,
+                    updatedAt = manifest.longOrDefault("updatedAt", originalFile.lastModified()),
+                )
+            }
+            ?.sortedByDescending(FossinProjectSummary::updatedAt)
+            ?.toList()
+            ?: emptyList()
+    }
+
+    suspend fun exportArchive(context: Context, projectId: String, destination: Uri): Boolean = withContext(Dispatchers.IO) {
+        runCatching {
+            val directory = projectDirectory(context, projectId)
+            val manifest = readManifest(directory) ?: return@runCatching false
+            val originalFile = manifest.stringOrNull("originalFile")?.let { File(directory, it) }
+                ?.takeIf(File::isFile)
+                ?: return@runCatching false
+            val archiveSidecar = manifest.deepCopy().apply {
+                addProperty("originalFile", "original/${originalFile.name}")
+                addProperty("archiveFormat", "photo-editor-editable-package")
+                val assets = JsonObject().apply {
+                    addProperty("original", "original/${originalFile.name}")
+                    manifest.stringOrNull("overlayFile")?.let { addProperty("overlay", "assets/$it") }
+                    manifest.stringOrNull("lutFile")?.let { addProperty("lut", "assets/$it") }
+                }
+                add("archiveAssets", assets)
+            }
+            context.contentResolver.openOutputStream(destination)?.use { output ->
+                ZipOutputStream(output).use { archive ->
+                    putFile(archive, originalFile, "original/${originalFile.name}")
+                    putText(archive, gson.toJson(archiveSidecar), FOSSIN_PROJECT_MANIFEST_FILE)
+                    manifest.stringOrNull("overlayFile")?.let { File(directory, it) }
+                        ?.takeIf(File::isFile)
+                        ?.let { putFile(archive, it, "assets/${it.name}") }
+                    manifest.stringOrNull("lutFile")?.let { File(directory, it) }
+                        ?.takeIf(File::isFile)
+                        ?.let { putFile(archive, it, "assets/${it.name}") }
+                }
+            } ?: return@runCatching false
+            true
+        }.getOrDefault(false)
+    }
+
+    suspend fun delete(context: Context, projectId: String) = writeMutex.withLock {
+        withContext(Dispatchers.IO) {
+            if (runCatching { UUID.fromString(projectId) }.isFailure) return@withContext
+            projectDirectory(context, projectId).deleteRecursively()
+        }
+    }
+
+    private fun syncAsset(
+        context: Context,
+        directory: File,
+        source: String?,
+        previousSource: String?,
+        previousFile: String?,
+        baseName: String,
+        fallbackExtension: String,
+    ): String? {
+        val sourceUri = source?.let(Uri::parse) ?: return null
+        val existing = previousFile?.let { File(directory, it) }
+        if (source == previousSource && existing?.isFile == true) return previousFile
+        val fileName = "$baseName.${extensionFor(context, sourceUri, fallbackExtension)}"
+        copyUriToFile(context, sourceUri, File(directory, fileName))
+        return fileName
+    }
+
+    private fun projectsRoot(context: Context): File = File(context.filesDir, FOSSIN_PROJECTS_DIRECTORY)
+
+    private fun projectDirectory(context: Context, projectId: String): File = File(projectsRoot(context), projectId)
+
+    private fun readManifest(directory: File): JsonObject? = runCatching {
+        val file = File(directory, FOSSIN_PROJECT_MANIFEST_FILE)
+        JsonParser.parseString(file.readText()).asJsonObject
+    }.getOrNull()
+
+    private fun copyUriToFile(context: Context, uri: Uri, destination: File) {
+        destination.parentFile?.mkdirs()
+        openUriStream(context, uri)?.use { input ->
+            FileOutputStream(destination).use { output -> input.copyTo(output) }
+        } ?: throw FileNotFoundException(uri.toString())
+    }
+
+    private fun writeAtomically(destination: File, contents: String) {
+        val temporary = File(destination.parentFile, "${destination.name}.tmp")
+        temporary.writeText(contents)
+        if (!temporary.renameTo(destination)) {
+            destination.delete()
+            check(temporary.renameTo(destination)) { "Could not save ${destination.name}" }
+        }
+    }
+
+    private fun putFile(archive: ZipOutputStream, file: File, path: String) {
+        archive.putNextEntry(ZipEntry(path))
+        FileInputStream(file).use { it.copyTo(archive) }
+        archive.closeEntry()
+    }
+
+    private fun putText(archive: ZipOutputStream, contents: String, path: String) {
+        archive.putNextEntry(ZipEntry(path))
+        archive.write(contents.toByteArray(Charsets.UTF_8))
+        archive.closeEntry()
+    }
+
+    private fun JsonObject.stringOrNull(name: String): String? =
+        get(name)?.takeUnless { it.isJsonNull }?.asString
+
+    private fun JsonObject.longOrDefault(name: String, default: Long): Long =
+        runCatching { get(name).asLong }.getOrDefault(default)
+}
+
+private fun Bundle.toSidecarJson(): JsonObject = JsonObject().also { output ->
+    keySet().forEach { key ->
+        when (val value = get(key)) {
+            is String -> output.addProperty(key, value)
+            is Float -> output.addProperty(key, value)
+            is Int -> output.addProperty(key, value)
+            is FloatArray -> output.add(key, JsonArray().apply { value.forEach(::add) })
+        }
+    }
+}
+
+private fun bundleToJson(bundle: Bundle): JsonObject = bundle.toSidecarJson()
+
+private fun encodeBundle(bundle: Bundle): String {
+    val parcel = Parcel.obtain()
+    return try {
+        bundle.writeToParcel(parcel, 0)
+        Base64.encodeToString(parcel.marshall(), Base64.NO_WRAP)
+    } finally {
+        parcel.recycle()
+    }
+}
+
+private fun decodeBundle(payload: String): Bundle? = runCatching {
+    val parcel = Parcel.obtain()
+    try {
+        val bytes = Base64.decode(payload, Base64.DEFAULT)
+        parcel.unmarshall(bytes, 0, bytes.size)
+        parcel.setDataPosition(0)
+        Bundle.CREATOR.createFromParcel(parcel)
+    } finally {
+        parcel.recycle()
+    }
+}.getOrNull()
+
+private fun Uri.isSameLocalFile(file: File): Boolean = scheme == "file" && runCatching {
+    File(path.orEmpty()).canonicalFile == file.canonicalFile
+}.getOrDefault(false)
+
+private fun extensionFor(context: Context, uri: Uri, fallback: String): String {
+    val name = displayName(context, uri)
+    return name.substringAfterLast('.', missingDelimiterValue = fallback)
+        .lowercase()
+        .takeIf { it.matches(Regex("[a-z0-9]{1,8}")) }
+        ?: fallback
+}
+
+private fun displayName(context: Context, uri: Uri): String = when (uri.scheme) {
+    "file" -> File(uri.path.orEmpty()).name
+    else -> context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+        if (cursor.moveToFirst()) cursor.getString(0) else null
+    } ?: uri.lastPathSegment?.substringAfterLast('/') ?: "photo"
+}
+
+private fun openUriStream(context: Context, uri: Uri) = when (uri.scheme) {
+    "file" -> uri.path?.let(::FileInputStream)
+    else -> context.contentResolver.openInputStream(uri)
+}
 
 internal fun encodeBrushStrokes(strokes: List<BrushStroke>): String = strokes.joinToString("|") { stroke ->
     listOf(
@@ -1075,6 +1387,7 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
     var showingHall by rememberSaveable { mutableStateOf(initialUri == null) }
     var overlay by remember { mutableStateOf<Bitmap?>(null) }
     var sourceUri by rememberSaveable { mutableStateOf<Uri?>(initialUri) }
+    var projectId by rememberSaveable { mutableStateOf<String?>(null) }
     var rendered by remember { mutableStateOf<Bitmap?>(null) }
     var tool by remember { mutableStateOf(EditorTool.Looks) }
     var editState by rememberSaveable(stateSaver = editorStateSaver) { mutableStateOf(EditorState()) }
@@ -1083,6 +1396,8 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
     var showOriginal by remember { mutableStateOf(false) }
     var isRendering by remember { mutableStateOf(false) }
     var isExporting by remember { mutableStateOf(false) }
+    var showExportDialog by remember { mutableStateOf(false) }
+    var flattenExportMode by remember { mutableStateOf(FossinFlattenExportMode.KeepProject) }
     var builtIns by remember { mutableStateOf<List<LutChoice>>(emptyList()) }
     var renderVersion by remember { mutableStateOf(0) }
     var gestureBase by remember { mutableStateOf<EditorState?>(null) }
@@ -1110,9 +1425,15 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
             }
         }
     }
+    fun ensureProject() {
+        if (projectId == null && sourceUri != null && source != null) {
+            projectId = FossinProjectStore.newProjectId()
+        }
+    }
     fun updateEdit(transform: (EditorState) -> EditorState) {
         val next = transform(editState)
         if (next == editState) return
+        ensureProject()
         undoStack.add(editState)
         if (undoStack.size > 48) undoStack.removeAt(0)
         editState = next
@@ -1121,12 +1442,14 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
     }
     fun undo() {
         if (undoStack.isEmpty()) return
+        ensureProject()
         redoStack.add(editState)
         editState = undoStack.removeAt(undoStack.lastIndex)
         renderVersion += 1
     }
     fun redo() {
         if (redoStack.isEmpty()) return
+        ensureProject()
         undoStack.add(editState)
         editState = redoStack.removeAt(redoStack.lastIndex)
         renderVersion += 1
@@ -1145,6 +1468,7 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
     fun previewEdit(transform: (EditorState) -> EditorState) {
         val next = transform(editState)
         if (next == editState) return
+        ensureProject()
         editState = next
         renderVersion += 1
     }
@@ -1189,6 +1513,9 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
     fun acceptImage(bitmap: Bitmap, resetEdits: Boolean = true) {
         source = bitmap
         rendered = null
+        if (projectId == null && sourceUri != null) {
+            projectId = FossinProjectStore.newProjectId()
+        }
         if (resetEdits) {
             overlay = null
             editState = EditorState()
@@ -1207,6 +1534,7 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { selectedUri ->
             persistReadPermission(context, selectedUri)
+            projectId = null
             scope.launch {
                 loadImage(context, selectedUri) { bitmap ->
                     sourceUri = selectedUri
@@ -1223,7 +1551,7 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
             scope.launch {
                 runCatching {
                     withContext(Dispatchers.IO) {
-                        context.contentResolver.openInputStream(selectedUri)?.use {
+                        openUriStream(context, selectedUri)?.use {
                             LutParser.parse(it, lutDisplayName(context, selectedUri))
                         } ?: throw FileNotFoundException()
                     }
@@ -1256,6 +1584,10 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
     }
     val exportPicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("image/jpeg")) { uri ->
         uri?.let { target ->
+            val modeAtExport = flattenExportMode
+            val projectAtExport = projectId
+            val sourceUriAtExport = sourceUri
+            val stateAtExport = editState
             scope.launch {
                 val input = source ?: return@launch
                 isExporting = true
@@ -1276,6 +1608,14 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
                     if (saved) {
                         persistReadPermission(context, target)
                         FossinLibraryStore.record(context, target, FossinLibraryKind.Edited)
+                        if (projectAtExport != null && sourceUriAtExport != null) {
+                            if (modeAtExport == FossinFlattenExportMode.KeepProject) {
+                                FossinProjectStore.save(context, projectAtExport, sourceUriAtExport, stateAtExport)
+                            } else {
+                                if (projectId == projectAtExport) projectId = null
+                                FossinProjectStore.delete(context, projectAtExport)
+                            }
+                        }
                     }
                 } catch (_: Throwable) {
                     saved = false
@@ -1285,6 +1625,25 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
                     isExporting = false
                 }
                 Toast.makeText(context, if (saved) R.string.fossin_export_done else R.string.fossin_export_failed, Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+    val editablePackagePicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
+        uri?.let { target ->
+            val projectAtExport = projectId
+            val sourceUriAtExport = sourceUri
+            val stateAtExport = editState
+            if (projectAtExport == null || sourceUriAtExport == null) return@let
+            scope.launch {
+                isExporting = true
+                val saved = FossinProjectStore.save(context, projectAtExport, sourceUriAtExport, stateAtExport)
+                val archived = saved && FossinProjectStore.exportArchive(context, projectAtExport, target)
+                isExporting = false
+                Toast.makeText(
+                    context,
+                    if (archived) R.string.fossin_export_package_done else R.string.fossin_export_package_failed,
+                    Toast.LENGTH_LONG,
+                ).show()
             }
         }
     }
@@ -1367,7 +1726,7 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
         if (editState.lut != null) return@LaunchedEffect
         runCatching {
             withContext(Dispatchers.IO) {
-                context.contentResolver.openInputStream(Uri.parse(uriText))?.use {
+                openUriStream(context, Uri.parse(uriText))?.use {
                     LutParser.parse(it, editState.lutName ?: context.getString(R.string.fossin_imported_lut))
                 } ?: throw FileNotFoundException()
             }
@@ -1388,6 +1747,13 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
         } else if (!restored.isRecycled) {
             restored.recycle()
         }
+    }
+    LaunchedEffect(projectId, sourceUri, source, editState) {
+        val id = projectId ?: return@LaunchedEffect
+        val uri = sourceUri ?: return@LaunchedEffect
+        if (source == null) return@LaunchedEffect
+        delay(350)
+        FossinProjectStore.save(context, id, uri, editState)
     }
     LaunchedEffect(source, editState, overlay, renderVersion, gestureBase != null) {
         val input = source ?: return@LaunchedEffect
@@ -1414,6 +1780,7 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
         finishGesture()
         source = null
         sourceUri = null
+        projectId = null
         rendered = null
         overlay = null
         editState = EditorState()
@@ -1423,18 +1790,23 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
         showGestureToolPanel = false
         showingHall = true
     }
-    fun openFromHall(uri: Uri) {
-        finishGesture()
-        source = null
-        rendered = null
-        overlay = null
-        sourceUri = uri
-        editState = EditorState()
-        undoStack.clear()
-        redoStack.clear()
-        showOriginal = false
-        showGestureToolPanel = false
-        showingHall = false
+    fun openFromHall(item: FossinLibraryItem) {
+        scope.launch {
+            val project = item.projectId?.let { FossinProjectStore.load(context, it) }
+            finishGesture()
+            source = null
+            rendered = null
+            overlay = null
+            sourceUri = project?.originalUri ?: item.uri
+            projectId = project?.id
+                ?: FossinProjectStore.newProjectId()
+            editState = project?.state ?: EditorState()
+            undoStack.clear()
+            redoStack.clear()
+            showOriginal = false
+            showGestureToolPanel = false
+            showingHall = false
+        }
     }
     if (showingHall) {
         BackHandler { onFinish() }
@@ -1444,6 +1816,26 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
             onOpenPhoto = ::openFromHall,
         )
         return
+    }
+
+    if (showExportDialog) {
+        FossinExportDialog(
+            onKeepProject = {
+                flattenExportMode = FossinFlattenExportMode.KeepProject
+                showExportDialog = false
+                exportPicker.launch("photo-editor-edit.jpg")
+            },
+            onPhotoOnly = {
+                flattenExportMode = FossinFlattenExportMode.PhotoOnly
+                showExportDialog = false
+                exportPicker.launch("photo-editor-edit.jpg")
+            },
+            onExportPackage = {
+                showExportDialog = false
+                editablePackagePicker.launch("photo-editor-editable.zip")
+            },
+            onDismiss = { showExportDialog = false },
+        )
     }
 
     BackHandler { leaveEditor() }
@@ -1510,7 +1902,7 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
                         showingOriginal = showOriginal,
                         onBack = ::leaveEditor,
                         onImport = { imagePicker.launch(arrayOf("image/*")) },
-                        onExport = { exportPicker.launch("photo-editor-edit.jpg") },
+                        onExport = { showExportDialog = true },
                         onShare = { shareEditedImage() },
                         onUndo = ::undo,
                         onRedo = ::redo,
@@ -1843,7 +2235,7 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
                     gestureModeEnabled = gestureModeEnabled,
                     onBack = ::leaveEditor,
                     onImport = { imagePicker.launch(arrayOf("image/*")) },
-                    onExport = { exportPicker.launch("photo-editor-edit.jpg") },
+                    onExport = { showExportDialog = true },
                     onShare = { shareEditedImage() },
                     onUndo = ::undo,
                     onRedo = ::redo,
@@ -1999,10 +2391,46 @@ private fun EmptyEditor(onImport: () -> Unit, onOpenCamera: () -> Unit) {
 }
 
 @Composable
+private fun FossinExportDialog(
+    onKeepProject: () -> Unit,
+    onPhotoOnly: () -> Unit,
+    onExportPackage: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.fossin_export_choice_title)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(stringResource(R.string.fossin_export_choice_message))
+                Text(
+                    text = stringResource(R.string.fossin_export_package_message),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 13.sp,
+                )
+                TextButton(onClick = onExportPackage) {
+                    Text(stringResource(R.string.fossin_export_editable_package))
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onKeepProject) {
+                Text(stringResource(R.string.fossin_export_keep_project))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onPhotoOnly) {
+                Text(stringResource(R.string.fossin_export_photo_only))
+            }
+        },
+    )
+}
+
+@Composable
 private fun FossinHall(
     onImport: () -> Unit,
     onOpenCamera: () -> Unit,
-    onOpenPhoto: (Uri) -> Unit,
+    onOpenPhoto: (FossinLibraryItem) -> Unit,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -2017,7 +2445,19 @@ private fun FossinHall(
     LaunchedEffect(refreshToken) {
         isLoading = true
         val library = withContext(Dispatchers.IO) {
+            val projects = FossinProjectStore.list(context)
+            val projectItems = projects.map {
+                FossinLibraryItem(
+                    uri = it.originalUri,
+                    kind = FossinLibraryKind.Edited,
+                    timestamp = it.updatedAt,
+                    name = it.title,
+                    projectId = it.id,
+                )
+            }
+            val projectOriginals = projects.mapNotNull(FossinProjectSummary::originalSourceUri).toSet()
             val recent = FossinLibraryStore.entries(context)
+                .filterNot { it.uri.toString() in projectOriginals }
             val camera = runCatching {
                 GalleryRepository(context.applicationContext)
                     .getPhotosSync()
@@ -2034,7 +2474,9 @@ private fun FossinHall(
                     .take(36)
                     .toList()
             }.getOrDefault(emptyList())
-            recent to camera
+            (projectItems + recent)
+                .sortedByDescending(FossinLibraryItem::timestamp)
+                .take(FOSSIN_LIBRARY_MAX_ENTRIES) to camera
         }
         importedAndEdited = library.first
         cameraPhotos = library.second
@@ -2155,7 +2597,7 @@ private fun FossinHallSection(
     emptyMessage: String,
     photos: List<FossinLibraryItem>,
     isLoading: Boolean,
-    onOpenPhoto: (Uri) -> Unit,
+    onOpenPhoto: (FossinLibraryItem) -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text(
@@ -2168,9 +2610,9 @@ private fun FossinHallSection(
             photos.isNotEmpty() -> LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 items(
                     items = photos,
-                    key = { "${it.kind.name}:${it.uri}" },
+                    key = { it.projectId ?: "${it.kind.name}:${it.uri}" },
                 ) { item ->
-                    FossinHallPhotoCard(item = item, onClick = { onOpenPhoto(item.uri) })
+                    FossinHallPhotoCard(item = item, onClick = { onOpenPhoto(item) })
                 }
             }
             else -> Surface(
