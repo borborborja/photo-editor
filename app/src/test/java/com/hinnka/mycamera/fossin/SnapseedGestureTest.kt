@@ -1,6 +1,8 @@
 package com.hinnka.mycamera.fossin
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SnapseedGestureTest {
@@ -39,5 +41,41 @@ class SnapseedGestureTest {
         assertEquals(0, snapseedValuePercent(-2f, -2f..2f))
         assertEquals(50, snapseedValuePercent(0f, -2f..2f))
         assertEquals(100, snapseedValuePercent(4f, -2f..2f))
+    }
+
+    @Test
+    fun gestureStartsBySelectingOrAdjustingAccordingToItsFirstDirection() {
+        assertEquals(
+            SnapseedGesturePhase.Pending,
+            snapseedInitialGesturePhase(4f, 3f, touchSlopPx = 14f),
+        )
+        assertEquals(
+            SnapseedGesturePhase.Selecting,
+            snapseedInitialGesturePhase(8f, -30f, touchSlopPx = 14f),
+        )
+        assertEquals(
+            SnapseedGesturePhase.Adjusting,
+            snapseedInitialGesturePhase(30f, -8f, touchSlopPx = 14f),
+        )
+    }
+
+    @Test
+    fun verticalSelectionCanTurnIntoHorizontalAdjustmentWithoutLifting() {
+        assertFalse(
+            snapseedShouldBeginHorizontalAdjustment(
+                horizontalSinceSelectionPx = 18f,
+                latestHorizontalDeltaPx = 3f,
+                latestVerticalDeltaPx = 8f,
+                turnSlopPx = 12f,
+            ),
+        )
+        assertTrue(
+            snapseedShouldBeginHorizontalAdjustment(
+                horizontalSinceSelectionPx = 14f,
+                latestHorizontalDeltaPx = 8f,
+                latestVerticalDeltaPx = 2f,
+                turnSlopPx = 12f,
+            ),
+        )
     }
 }

@@ -26,12 +26,15 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -39,11 +42,15 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.PageSize
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.pointerInput
@@ -83,6 +90,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -142,9 +150,77 @@ private enum class EditorTool {
     Looks, Tune, Details, TonalContrast, Curves, WhiteBalance, Crop, Expand, Perspective, Rotate, Color, Hsl, Selective, Brush, Healing, LensBlur, Vignette, Grain, Bloom, Effects, HdrScape, GlamourGlow, Drama, Vintage, GrainyFilm, Retrolux, Grunge, BlackWhite, Noir, Portrait, FaceEnhance, HeadPose, Frame, DoubleExposure, Text
 }
 
+private data class EditorToolPresentation(
+    @StringRes val labelRes: Int,
+    val icon: ImageVector,
+)
+
+private fun editorToolPresentation(tool: EditorTool): EditorToolPresentation = when (tool) {
+    EditorTool.Looks -> EditorToolPresentation(R.string.fossin_looks, AppIcons.AutoAwesome)
+    EditorTool.Tune -> EditorToolPresentation(R.string.fossin_tune, AppIcons.Tune)
+    EditorTool.Details -> EditorToolPresentation(R.string.fossin_details, AppIcons.Contrast)
+    EditorTool.TonalContrast -> EditorToolPresentation(R.string.fossin_tonal_contrast, AppIcons.Contrast)
+    EditorTool.Curves -> EditorToolPresentation(R.string.recipe_tab_curve, AppIcons.Contrast)
+    EditorTool.WhiteBalance -> EditorToolPresentation(R.string.fossin_white_balance, AppIcons.Tune)
+    EditorTool.Crop -> EditorToolPresentation(R.string.crop, AppIcons.Crop169)
+    EditorTool.Expand -> EditorToolPresentation(R.string.fossin_expand, AppIcons.Crop169)
+    EditorTool.Perspective -> EditorToolPresentation(R.string.fossin_perspective, AppIcons.Crop169)
+    EditorTool.Rotate -> EditorToolPresentation(R.string.rotate, AppIcons.ScreenRotation)
+    EditorTool.Color -> EditorToolPresentation(R.string.recipe_tab_color, AppIcons.Palette)
+    EditorTool.Hsl -> EditorToolPresentation(R.string.fossin_hsl, AppIcons.Palette)
+    EditorTool.Selective -> EditorToolPresentation(R.string.fossin_selective, AppIcons.Tune)
+    EditorTool.Brush -> EditorToolPresentation(R.string.fossin_brush, AppIcons.Tune)
+    EditorTool.Healing -> EditorToolPresentation(R.string.fossin_healing, AppIcons.AutoAwesome)
+    EditorTool.LensBlur -> EditorToolPresentation(R.string.fossin_lens_blur, AppIcons.AutoAwesome)
+    EditorTool.Vignette -> EditorToolPresentation(R.string.recipe_param_vignette, AppIcons.FilterVintage)
+    EditorTool.Grain -> EditorToolPresentation(R.string.recipe_param_film_grain, AppIcons.Grain)
+    EditorTool.Bloom -> EditorToolPresentation(R.string.recipe_param_bloom, AppIcons.AutoAwesome)
+    EditorTool.Effects -> EditorToolPresentation(R.string.fossin_effects, AppIcons.FilterVintage)
+    EditorTool.HdrScape -> EditorToolPresentation(R.string.fossin_hdr_scape, AppIcons.AutoAwesome)
+    EditorTool.GlamourGlow -> EditorToolPresentation(R.string.fossin_glamour_glow, AppIcons.AutoAwesome)
+    EditorTool.Drama -> EditorToolPresentation(R.string.fossin_drama, AppIcons.AutoAwesome)
+    EditorTool.Vintage -> EditorToolPresentation(R.string.fossin_vintage, AppIcons.FilterVintage)
+    EditorTool.GrainyFilm -> EditorToolPresentation(R.string.fossin_grainy_film, AppIcons.Grain)
+    EditorTool.Retrolux -> EditorToolPresentation(R.string.fossin_retrolux, AppIcons.FilterVintage)
+    EditorTool.Grunge -> EditorToolPresentation(R.string.fossin_grunge, AppIcons.FilterVintage)
+    EditorTool.BlackWhite -> EditorToolPresentation(R.string.fossin_black_white, AppIcons.Contrast)
+    EditorTool.Noir -> EditorToolPresentation(R.string.fossin_noir, AppIcons.Contrast)
+    EditorTool.Portrait -> EditorToolPresentation(R.string.fossin_portrait, AppIcons.AutoAwesome)
+    EditorTool.FaceEnhance -> EditorToolPresentation(R.string.fossin_face_enhance, AppIcons.AutoAwesome)
+    EditorTool.HeadPose -> EditorToolPresentation(R.string.fossin_head_pose, AppIcons.AutoAwesome)
+    EditorTool.Frame -> EditorToolPresentation(R.string.fossin_frame, AppIcons.Crop169)
+    EditorTool.DoubleExposure -> EditorToolPresentation(R.string.fossin_double_exposure, AppIcons.AddPhotoAlternate)
+    EditorTool.Text -> EditorToolPresentation(R.string.fossin_text, AppIcons.Article)
+}
+
+private fun EditorTool.usesDirectCanvas(): Boolean = when (this) {
+    EditorTool.Crop,
+    EditorTool.Selective,
+    EditorTool.Brush,
+    EditorTool.Healing,
+    EditorTool.LensBlur,
+    -> true
+    else -> false
+}
+
+private fun EditorTool.needsGestureContextPanel(): Boolean = when (this) {
+    EditorTool.Looks,
+    EditorTool.Crop,
+    EditorTool.Hsl,
+    EditorTool.Selective,
+    EditorTool.Brush,
+    EditorTool.Healing,
+    EditorTool.LensBlur,
+    EditorTool.DoubleExposure,
+    EditorTool.Text,
+    -> true
+    else -> false
+}
+
 private const val FOSSIN_EDITOR_PREFERENCES = "fossin_editor_preferences"
 private const val FOSSIN_GESTURE_MODE_ENABLED = "gesture_mode_enabled"
 private const val GESTURE_TOUCH_SLOP_DP = 14f
+private const val GESTURE_DIRECTION_TURN_SLOP_DP = 12f
 private const val GESTURE_FULL_RANGE_DP = 240f
 private const val GESTURE_PARAMETER_STEP_DP = 52f
 private const val GESTURE_PREVIEW_MAX_EDGE = 1024
@@ -194,7 +270,33 @@ internal fun snapseedValuePercent(value: Float, range: ClosedFloatingPointRange<
     return (((value - range.start) / rangeSize) * 100f).roundToInt().coerceIn(0, 100)
 }
 
-private enum class SnapseedGestureAxis { Horizontal, Vertical }
+internal enum class SnapseedGesturePhase { Pending, Selecting, Adjusting }
+
+/** Chooses the first gesture phase once the user has moved past touch slop. */
+internal fun snapseedInitialGesturePhase(
+    horizontalDistancePx: Float,
+    verticalDistancePx: Float,
+    touchSlopPx: Float,
+): SnapseedGesturePhase {
+    if (maxOf(kotlin.math.abs(horizontalDistancePx), kotlin.math.abs(verticalDistancePx)) < touchSlopPx) {
+        return SnapseedGesturePhase.Pending
+    }
+    return if (kotlin.math.abs(verticalDistancePx) > kotlin.math.abs(horizontalDistancePx)) {
+        SnapseedGesturePhase.Selecting
+    } else {
+        SnapseedGesturePhase.Adjusting
+    }
+}
+
+/** Detects an intentional turn from a vertical parameter browse into horizontal adjustment. */
+internal fun snapseedShouldBeginHorizontalAdjustment(
+    horizontalSinceSelectionPx: Float,
+    latestHorizontalDeltaPx: Float,
+    latestVerticalDeltaPx: Float,
+    turnSlopPx: Float,
+): Boolean =
+    kotlin.math.abs(horizontalSinceSelectionPx) >= turnSlopPx &&
+        kotlin.math.abs(latestHorizontalDeltaPx) > kotlin.math.abs(latestVerticalDeltaPx)
 
 private data class GestureParameter(
     val key: String,
@@ -921,6 +1023,7 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
     var selectedHslChannel by remember { mutableStateOf(HslChannel.Red) }
     var showGestureFeedback by remember { mutableStateOf(false) }
     var gestureFeedbackToken by remember { mutableStateOf(0) }
+    var showGestureToolPanel by remember { mutableStateOf(false) }
     val processor = remember { LutImageProcessor(context.applicationContext) }
     val gesturePreview = remember(source) {
         source?.let { bitmap -> scaledPreviewBitmap(bitmap, GESTURE_PREVIEW_MAX_EDGE) }
@@ -1019,6 +1122,7 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
         }
         gestureBase = null
         showOriginal = false
+        showGestureToolPanel = false
         tool = EditorTool.Looks
     }
     DisposableEffect(processor) {
@@ -1232,7 +1336,10 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
     fun setGestureMode(enabled: Boolean) {
         gestureModeEnabled = enabled
         gesturePreferences.edit().putBoolean(FOSSIN_GESTURE_MODE_ENABLED, enabled).apply()
-        if (!enabled) showGestureFeedback = false
+        if (!enabled) {
+            showGestureFeedback = false
+            showGestureToolPanel = false
+        }
     }
     LaunchedEffect(gestureFeedbackToken) {
         if (gestureFeedbackToken == 0) return@LaunchedEffect
@@ -1240,97 +1347,157 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
         delay(1500)
         if (gestureFeedbackToken == token) showGestureFeedback = false
     }
+    fun selectGestureTool(nextTool: EditorTool) {
+        if (nextTool == tool) {
+            if (nextTool.needsGestureContextPanel()) showGestureToolPanel = true
+            return
+        }
+        finishGesture()
+        tool = nextTool
+        showGestureToolPanel = false
+        selectedGestureParameterKey = snapseedGestureParameters(
+            nextTool,
+            editState,
+            selectedHslChannel,
+            overlay != null,
+        ).firstOrNull()?.key
+        refreshGestureFeedback()
+    }
     val image = if (showOriginal || (tool == EditorTool.Crop && editState.cropMode == CropMode.Free)) source else rendered ?: source
-    Surface(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(), color = Color(0xFF0B0B0C)) {
-        Column(Modifier.fillMaxSize()) {
-            EditorTopBar(
-                hasImage = source != null,
-                canUndo = undoStack.isNotEmpty(),
-                canRedo = redoStack.isNotEmpty(),
-                showingOriginal = showOriginal,
-                onBack = onFinish,
-                onImport = { imagePicker.launch(arrayOf("image/*")) },
-                onExport = { exportPicker.launch("photo-editor-edit.jpg") },
-                onShare = { shareEditedImage() },
-                onUndo = ::undo,
-                onRedo = ::redo,
-                onReset = ::resetEdit,
-                onToggleOriginal = { showOriginal = !showOriginal }
-            )
+    val immersiveGestureMode = gestureModeEnabled && source != null
+    val imageContentModifier = Modifier
+        .fillMaxSize()
+        .then(if (immersiveGestureMode) Modifier else Modifier.clip(RoundedCornerShape(18.dp)))
+    Surface(Modifier.fillMaxSize(), color = Color(0xFF0B0B0C)) {
+        Box(Modifier.fillMaxSize()) {
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .then(
+                        if (immersiveGestureMode) Modifier
+                        else Modifier.statusBarsPadding().navigationBarsPadding(),
+                    ),
+            ) {
+                if (!immersiveGestureMode) {
+                    EditorTopBar(
+                        hasImage = source != null,
+                        canUndo = undoStack.isNotEmpty(),
+                        canRedo = redoStack.isNotEmpty(),
+                        showingOriginal = showOriginal,
+                        onBack = onFinish,
+                        onImport = { imagePicker.launch(arrayOf("image/*")) },
+                        onExport = { exportPicker.launch("photo-editor-edit.jpg") },
+                        onShare = { shareEditedImage() },
+                        onUndo = ::undo,
+                        onRedo = ::redo,
+                        onReset = ::resetEdit,
+                        onToggleOriginal = { showOriginal = !showOriginal },
+                    )
+                }
             Box(
                 Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp)
+                    .padding(horizontal = if (immersiveGestureMode) 0.dp else 12.dp)
                     .pointerInput(tool, editState.cropMode, gestureModeEnabled, source != null) {
                         val cropGesture = tool == EditorTool.Crop && editState.cropMode == CropMode.Free
                         val selectiveGesture = tool == EditorTool.Selective
                         val lensBlurGesture = tool == EditorTool.LensBlur
-                        val supportsGestureMode = gestureModeEnabled && source != null && currentGestureParameters.isNotEmpty()
+                        val supportsGestureMode = gestureModeEnabled &&
+                            source != null &&
+                            !tool.usesDirectCanvas() &&
+                            currentGestureParameters.isNotEmpty()
                         if (supportsGestureMode) {
-                            var axis: SnapseedGestureAxis? = null
+                            var phase = SnapseedGesturePhase.Pending
                             var totalHorizontal = 0f
                             var totalVertical = 0f
+                            var horizontalSinceSelection = 0f
+                            var adjustmentHorizontal = 0f
                             var horizontalStartValue = 0f
                             var horizontalParameter: GestureParameter? = null
                             var verticalStartIndex = 0
                             detectDragGestures(
                                 onDragStart = {
-                                    axis = null
+                                    phase = SnapseedGesturePhase.Pending
                                     totalHorizontal = 0f
                                     totalVertical = 0f
+                                    horizontalSinceSelection = 0f
+                                    adjustmentHorizontal = 0f
                                     horizontalParameter = null
                                 },
                                 onDrag = { change, dragAmount ->
                                     totalHorizontal += dragAmount.x
                                     totalVertical += dragAmount.y
-                                    if (axis == null) {
-                                        val touchSlop = GESTURE_TOUCH_SLOP_DP.dp.toPx()
-                                        if (maxOf(kotlin.math.abs(totalHorizontal), kotlin.math.abs(totalVertical)) < touchSlop) {
-                                            return@detectDragGestures
-                                        }
-                                        if (kotlin.math.abs(totalVertical) > kotlin.math.abs(totalHorizontal)) {
-                                            axis = SnapseedGestureAxis.Vertical
+                                    if (phase == SnapseedGesturePhase.Pending) {
+                                        phase = snapseedInitialGesturePhase(
+                                            horizontalDistancePx = totalHorizontal,
+                                            verticalDistancePx = totalVertical,
+                                            touchSlopPx = GESTURE_TOUCH_SLOP_DP.dp.toPx(),
+                                        )
+                                        if (phase == SnapseedGesturePhase.Selecting) {
                                             val parameters = currentGestureParameters
                                             verticalStartIndex = parameters.indexOfFirst { it.key == currentSelectedGestureParameterKey }
                                                 .takeIf { it >= 0 } ?: 0
                                             selectedGestureParameterKey = parameters[verticalStartIndex].key
                                             refreshGestureFeedback()
-                                        } else {
-                                            axis = SnapseedGestureAxis.Horizontal
+                                        } else if (phase == SnapseedGesturePhase.Adjusting) {
                                             horizontalParameter = currentGestureParameters.firstOrNull {
                                                 it.key == currentSelectedGestureParameterKey
                                             } ?: currentGestureParameters.first()
                                             horizontalStartValue = horizontalParameter?.value ?: 0f
+                                            adjustmentHorizontal = totalHorizontal - dragAmount.x
                                             beginGesture()
                                         }
                                     }
-                                    if (axis == SnapseedGestureAxis.Horizontal) {
+                                    if (phase == SnapseedGesturePhase.Selecting) {
+                                        val parameters = currentGestureParameters
+                                        if (parameters.isNotEmpty()) {
+                                            val index = snapseedParameterIndexForDrag(
+                                                verticalStartIndex,
+                                                parameters.size,
+                                                totalVertical,
+                                                GESTURE_PARAMETER_STEP_DP.dp.toPx(),
+                                            )
+                                            selectedGestureParameterKey = parameters[index].key
+                                            refreshGestureFeedback()
+                                        }
+                                        horizontalSinceSelection += dragAmount.x
+                                        if (snapseedShouldBeginHorizontalAdjustment(
+                                                horizontalSinceSelectionPx = horizontalSinceSelection,
+                                                latestHorizontalDeltaPx = dragAmount.x,
+                                                latestVerticalDeltaPx = dragAmount.y,
+                                                turnSlopPx = GESTURE_DIRECTION_TURN_SLOP_DP.dp.toPx(),
+                                            )
+                                        ) {
+                                            horizontalParameter = parameters.firstOrNull {
+                                                it.key == selectedGestureParameterKey
+                                            } ?: parameters.firstOrNull()
+                                            horizontalStartValue = horizontalParameter?.value ?: 0f
+                                            adjustmentHorizontal = 0f
+                                            phase = SnapseedGesturePhase.Adjusting
+                                            beginGesture()
+                                        }
+                                    }
+                                    if (phase == SnapseedGesturePhase.Adjusting) {
+                                        adjustmentHorizontal += dragAmount.x
                                         horizontalParameter?.let { parameter ->
                                             val value = snapseedAdjustedValue(
                                                 startValue = horizontalStartValue,
                                                 range = parameter.range,
-                                                horizontalDistancePx = totalHorizontal,
+                                                horizontalDistancePx = adjustmentHorizontal,
                                                 fullRangeDistancePx = GESTURE_FULL_RANGE_DP.dp.toPx(),
                                             )
                                             previewEdit { state -> parameter.update(state, value) }
-                                            refreshGestureFeedback()
-                                        }
-                                    } else if (axis == SnapseedGestureAxis.Vertical) {
-                                        val parameters = currentGestureParameters
-                                        if (parameters.isNotEmpty()) {
-                                            val index = snapseedParameterIndexForDrag(verticalStartIndex, parameters.size, totalVertical, GESTURE_PARAMETER_STEP_DP.dp.toPx())
-                                            selectedGestureParameterKey = parameters[index].key
                                             refreshGestureFeedback()
                                         }
                                     }
                                     change.consume()
                                 },
                                 onDragEnd = {
-                                    if (axis == SnapseedGestureAxis.Horizontal) finishGesture()
+                                    if (phase == SnapseedGesturePhase.Adjusting) finishGesture()
                                 },
                                 onDragCancel = {
-                                    if (axis == SnapseedGestureAxis.Horizontal) finishGesture()
+                                    if (phase == SnapseedGesturePhase.Adjusting) finishGesture()
                                 },
                             )
                         } else {
@@ -1417,9 +1584,14 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
                 contentAlignment = Alignment.Center,
             ) {
                 if (image == null) EmptyEditor({ imagePicker.launch(arrayOf("image/*")) }, onOpenCamera)
-                else Image(image.asImageBitmap(), stringResource(R.string.fossin_preview), Modifier.fillMaxSize().clip(RoundedCornerShape(18.dp)), contentScale = ContentScale.Fit)
+                else Image(
+                    image.asImageBitmap(),
+                    stringResource(R.string.fossin_preview),
+                    imageContentModifier,
+                    contentScale = ContentScale.Fit,
+                )
                 if (source != null && (tool == EditorTool.Brush || tool == EditorTool.Healing)) {
-                    ComposeCanvas(Modifier.fillMaxSize().clip(RoundedCornerShape(18.dp))) {
+                    ComposeCanvas(imageContentModifier) {
                         val markerColor = if (tool == EditorTool.Brush) Color(0xFFFF8A5C) else Color(0xFF8CC8FF)
                         val points = if (tool == EditorTool.Brush) editState.brushStrokes.flatMap { it.points } else editState.healingStrokes.flatMap { it.points }
                         val rect = displayedImageRect(size.width, size.height, image)
@@ -1433,7 +1605,7 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
                     }
                 }
                 if (source != null && tool == EditorTool.Selective) {
-                    ComposeCanvas(Modifier.fillMaxSize().clip(RoundedCornerShape(18.dp))) {
+                    ComposeCanvas(imageContentModifier) {
                         val points = editState.selectivePoints.ifEmpty { listOf(SelectivePoint(editState.selectiveX, editState.selectiveY, editState.selectiveRadius, editState.selectiveExposure, editState.selectiveContrast, editState.selectiveSaturation, editState.selectiveStructure)) }
                         val rect = displayedImageRect(size.width, size.height, image)
                         points.forEach { point ->
@@ -1444,7 +1616,7 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
                     }
                 }
                 if (source != null && tool == EditorTool.LensBlur) {
-                    ComposeCanvas(Modifier.fillMaxSize().clip(RoundedCornerShape(18.dp))) {
+                    ComposeCanvas(imageContentModifier) {
                         val rect = displayedImageRect(size.width, size.height, image)
                         val center = Offset(rect.left + editState.lensBlurX * rect.width, rect.top + editState.lensBlurY * rect.height)
                         if (editState.lensBlurShape == LensBlurShape.Radial) {
@@ -1458,7 +1630,7 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
                     }
                 }
                 if (source != null && tool == EditorTool.Crop && editState.cropMode == CropMode.Free) {
-                    ComposeCanvas(Modifier.fillMaxSize().clip(RoundedCornerShape(18.dp))) {
+                    ComposeCanvas(imageContentModifier) {
                         val rect = displayedImageRect(size.width, size.height, source)
                         val left = rect.left + editState.cropLeft * rect.width
                         val top = rect.top + editState.cropTop * rect.height
@@ -1475,7 +1647,7 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
                         drawLine(Color.White, Offset(left, bottom), Offset(left, top), strokeWidth = 3f)
                     }
                 }
-                if (source != null) {
+                if (source != null && !immersiveGestureMode) {
                     FilterChip(
                         selected = gestureModeEnabled,
                         onClick = { setGestureMode(!gestureModeEnabled) },
@@ -1492,16 +1664,9 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
                             .padding(12.dp),
                     )
                 }
-                if (showGestureFeedback && gestureModeEnabled && activeGestureParameter != null) {
-                    GestureFeedback(
-                        parameters = gestureParameters,
-                        selectedKey = activeGestureParameter.key,
-                        modifier = Modifier.align(Alignment.Center),
-                    )
-                }
                 if (isRendering || isExporting) LinearProgressIndicator(Modifier.align(Alignment.BottomCenter).fillMaxWidth(0.75f))
             }
-            if (source != null) {
+            if (source != null && !immersiveGestureMode) {
                 ToolGrid(tool) { tool = it }
                 when (tool) {
                 EditorTool.Looks -> LooksPanel(editState.style, editState.lut, builtIns, editState.intensity, { value -> updateEdit { it.copy(style = value) } }, { value -> updateEdit { it.copy(lut = value, lutName = value?.name, lutUri = null) } }, { lutPicker.launch(arrayOf("application/*", "text/plain", "*/*")) }) { value -> updateEdit { it.copy(intensity = value) } }
@@ -1542,6 +1707,68 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
                 EditorTool.Frame -> FramePanel(editState.frameStyle, editState.frameWidth, { value -> updateEdit { it.copy(frameStyle = value) } }, { value -> updateEdit { it.copy(frameWidth = value) } })
                 EditorTool.DoubleExposure -> DoubleExposurePanel(overlay != null, editState.overlayAlpha, editState.overlayBlendMode, { overlayPicker.launch(arrayOf("image/*")) }, { value -> updateEdit { it.copy(overlayAlpha = value) } }, { value -> updateEdit { it.copy(overlayBlendMode = value) } })
                 EditorTool.Text -> TextPanel(editState.text, editState.textSize, editState.textOpacity, editState.textRotation, editState.textColor, editState.textStyle, { value -> updateEdit { it.copy(text = value) } }, { value -> updateEdit { it.copy(textSize = value) } }, { value -> updateEdit { it.copy(textOpacity = value) } }, { value -> updateEdit { it.copy(textRotation = value) } }, { value -> updateEdit { it.copy(textColor = value) } }, { value -> updateEdit { it.copy(textStyle = value) } })
+                }
+            }
+            }
+            if (immersiveGestureMode) {
+                GestureModeTopBar(
+                    hasImage = true,
+                    canUndo = undoStack.isNotEmpty(),
+                    canRedo = redoStack.isNotEmpty(),
+                    showingOriginal = showOriginal,
+                    gestureModeEnabled = gestureModeEnabled,
+                    onBack = onFinish,
+                    onImport = { imagePicker.launch(arrayOf("image/*")) },
+                    onExport = { exportPicker.launch("photo-editor-edit.jpg") },
+                    onShare = { shareEditedImage() },
+                    onUndo = ::undo,
+                    onRedo = ::redo,
+                    onReset = ::resetEdit,
+                    onToggleOriginal = { showOriginal = !showOriginal },
+                    onToggleGestureMode = { setGestureMode(false) },
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .statusBarsPadding(),
+                )
+                GestureDock(
+                    selectedTool = tool,
+                    parameters = gestureParameters,
+                    selectedParameterKey = activeGestureParameter?.key,
+                    showParameters = showGestureFeedback && !tool.usesDirectCanvas(),
+                    onToolSelect = ::selectGestureTool,
+                    onParameterSelect = { key ->
+                        selectedGestureParameterKey = key
+                        refreshGestureFeedback()
+                    },
+                    onOpenContext = { showGestureToolPanel = true },
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .navigationBarsPadding(),
+                )
+                if (showGestureToolPanel) {
+                    GestureContextSheet(
+                        title = stringResource(editorToolPresentation(tool).labelRes),
+                        onDismiss = { showGestureToolPanel = false },
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .navigationBarsPadding(),
+                    ) {
+                        when (tool) {
+                            EditorTool.Looks -> LooksPanel(editState.style, editState.lut, builtIns, editState.intensity, { value -> updateEdit { it.copy(style = value) } }, { value -> updateEdit { it.copy(lut = value, lutName = value?.name, lutUri = null) } }, { lutPicker.launch(arrayOf("application/*", "text/plain", "*/*")) }) { value -> updateEdit { it.copy(intensity = value) } }
+                            EditorTool.Crop -> CropPanel(editState.cropMode) { value -> updateEdit { it.copy(cropMode = value) } }
+                            EditorTool.Hsl -> HslPanel(editState.hsl, selectedHslChannel, { selectedHslChannel = it }) { value -> updateEdit { it.copy(hsl = value(it.hsl)) } }
+                            EditorTool.Selective -> SelectivePanel(editState, { updateEdit { state ->
+                                val point = SelectivePoint(state.selectiveX, state.selectiveY, state.selectiveRadius, state.selectiveExposure, state.selectiveContrast, state.selectiveSaturation, state.selectiveStructure)
+                                state.copy(selectivePoints = state.selectivePoints + point)
+                            } }) { value -> updateEdit { value(it).withSyncedPrimarySelective() } }
+                            EditorTool.Brush -> BrushPanel(editState) { value -> updateEdit { value(it) } }
+                            EditorTool.Healing -> HealingPanel(editState) { value -> updateEdit { value(it) } }
+                            EditorTool.LensBlur -> LensBlurPanel(editState) { value -> updateEdit { value(it) } }
+                            EditorTool.DoubleExposure -> DoubleExposurePanel(overlay != null, editState.overlayAlpha, editState.overlayBlendMode, { overlayPicker.launch(arrayOf("image/*")) }, { value -> updateEdit { it.copy(overlayAlpha = value) } }, { value -> updateEdit { it.copy(overlayBlendMode = value) } })
+                            EditorTool.Text -> TextPanel(editState.text, editState.textSize, editState.textOpacity, editState.textRotation, editState.textColor, editState.textStyle, { value -> updateEdit { it.copy(text = value) } }, { value -> updateEdit { it.copy(textSize = value) } }, { value -> updateEdit { it.copy(textOpacity = value) } }, { value -> updateEdit { it.copy(textRotation = value) } }, { value -> updateEdit { it.copy(textColor = value) } }, { value -> updateEdit { it.copy(textStyle = value) } })
+                            else -> Unit
+                        }
+                    }
                 }
             }
         }
@@ -1648,23 +1875,242 @@ private fun EmptyEditor(onImport: () -> Unit, onOpenCamera: () -> Unit) {
 }
 
 @Composable
-private fun GestureFeedback(parameters: List<GestureParameter>, selectedKey: String, modifier: Modifier = Modifier) {
+private fun GestureModeTopBar(
+    hasImage: Boolean,
+    canUndo: Boolean,
+    canRedo: Boolean,
+    showingOriginal: Boolean,
+    gestureModeEnabled: Boolean,
+    onBack: () -> Unit,
+    onImport: () -> Unit,
+    onExport: () -> Unit,
+    onShare: () -> Unit,
+    onUndo: () -> Unit,
+    onRedo: () -> Unit,
+    onReset: () -> Unit,
+    onToggleOriginal: () -> Unit,
+    onToggleGestureMode: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 6.dp)
+            .clip(RoundedCornerShape(18.dp))
+            .background(Color(0x780B0B0C))
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        IconButton(onClick = onBack) {
+            Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back), tint = Color.White)
+        }
+        IconButton(onClick = onUndo, enabled = canUndo) {
+            Icon(AppIcons.AutoMirroredOutlinedUndo, stringResource(R.string.fossin_undo), tint = if (canUndo) Color.White else Color(0xFF77777D))
+        }
+        IconButton(onClick = onRedo, enabled = canRedo) {
+            Icon(AppIcons.AutoMirroredOutlinedUndo, stringResource(R.string.fossin_redo), tint = if (canRedo) Color.White else Color(0xFF77777D), modifier = Modifier.rotate(180f))
+        }
+        IconButton(onClick = onToggleOriginal, enabled = hasImage) {
+            Icon(if (showingOriginal) AppIcons.VisibilityOff else AppIcons.Visibility, stringResource(R.string.fossin_compare), tint = Color.White)
+        }
+        IconButton(onClick = onReset, enabled = hasImage) {
+            Icon(AppIcons.RestartAlt, stringResource(R.string.fossin_reset), tint = Color.White)
+        }
+        IconButton(onClick = onImport) {
+            Icon(AppIcons.AddPhotoAlternate, stringResource(R.string.fossin_import), tint = Color.White)
+        }
+        IconButton(onClick = onShare, enabled = hasImage) {
+            Icon(Icons.Default.Share, stringResource(R.string.share), tint = Color.White)
+        }
+        IconButton(onClick = onExport, enabled = hasImage) {
+            Icon(AppIcons.Download, stringResource(R.string.fossin_export), tint = Color.White)
+        }
+        TextButton(onClick = onToggleGestureMode) {
+            Text(
+                stringResource(if (gestureModeEnabled) R.string.fossin_gestures_on else R.string.fossin_gestures_off),
+                color = Color.White,
+                fontSize = 11.sp,
+            )
+        }
+    }
+}
+
+@Composable
+private fun GestureDock(
+    selectedTool: EditorTool,
+    parameters: List<GestureParameter>,
+    selectedParameterKey: String?,
+    showParameters: Boolean,
+    onToolSelect: (EditorTool) -> Unit,
+    onParameterSelect: (String) -> Unit,
+    onOpenContext: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     Column(
         modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        GestureToolCarousel(
+            selectedTool = selectedTool,
+            onToolSelect = onToolSelect,
+            onOpenContext = onOpenContext,
+        )
+        if (showParameters && parameters.isNotEmpty()) {
+            GestureParameterMenu(
+                parameters = parameters,
+                selectedKey = selectedParameterKey,
+                onSelect = onParameterSelect,
+            )
+        }
+    }
+}
+
+@Composable
+private fun GestureToolCarousel(
+    selectedTool: EditorTool,
+    onToolSelect: (EditorTool) -> Unit,
+    onOpenContext: () -> Unit,
+) {
+    val tools = remember { EditorTool.values().toList() }
+    val selectedIndex = tools.indexOf(selectedTool).coerceAtLeast(0)
+    val pagerState = rememberPagerState(
+        initialPage = selectedIndex,
+        pageCount = { tools.size },
+    )
+    LaunchedEffect(selectedIndex) {
+        if (pagerState.currentPage != selectedIndex) pagerState.animateScrollToPage(selectedIndex)
+    }
+    LaunchedEffect(pagerState.currentPage) {
+        tools.getOrNull(pagerState.currentPage)?.let { visibleTool ->
+            if (visibleTool != selectedTool) onToolSelect(visibleTool)
+        }
+    }
+    val presentation = editorToolPresentation(selectedTool)
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .background(Color(0x780B0B0C))
+            .padding(vertical = 4.dp),
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = stringResource(presentation.labelRes),
+                color = Color.White,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f),
+            )
+            if (selectedTool.needsGestureContextPanel()) {
+                TextButton(onClick = onOpenContext) {
+                    Text(stringResource(R.string.fossin_gesture_options), color = Color(0xFFFFC857), fontSize = 11.sp)
+                }
+            }
+        }
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            val sidePadding = maxOf(0.dp, (maxWidth - 56.dp) / 2)
+            HorizontalPager(
+                state = pagerState,
+                contentPadding = PaddingValues(horizontal = sidePadding),
+                pageSize = PageSize.Fixed(56.dp),
+                pageSpacing = 4.dp,
+                modifier = Modifier.fillMaxWidth(),
+            ) { page ->
+                val tool = tools[page]
+                val item = editorToolPresentation(tool)
+                val selected = tool == selectedTool
+                IconButton(
+                    onClick = {
+                        if (selected && tool.needsGestureContextPanel()) onOpenContext()
+                        else onToolSelect(tool)
+                    },
+                    modifier = Modifier
+                        .size(52.dp)
+                        .clip(CircleShape)
+                        .background(if (selected) Color(0xFFFFB000) else Color.Transparent),
+                ) {
+                    Icon(
+                        imageVector = item.icon,
+                        contentDescription = stringResource(item.labelRes),
+                        tint = if (selected) Color.Black else Color.White,
+                        modifier = Modifier.size(22.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun GestureParameterMenu(
+    parameters: List<GestureParameter>,
+    selectedKey: String?,
+    onSelect: (String) -> Unit,
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(max = 216.dp)
             .clip(RoundedCornerShape(14.dp))
-            .background(Color(0xE61B1B20))
-            .padding(horizontal = 20.dp, vertical = 12.dp),
+            .background(Color(0x8F0B0B0C))
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 10.dp, vertical = 8.dp),
         horizontalAlignment = Alignment.Start,
     ) {
         parameters.forEach { parameter ->
             val selected = parameter.key == selectedKey
             Row(
-                modifier = Modifier.fillMaxWidth().background(if (selected) Color(0xFFFFB000) else Color.Transparent).padding(horizontal = 10.dp, vertical = 5.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable { onSelect(parameter.key) }
+                    .background(if (selected) Color(0xFFFFB000) else Color.Transparent)
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 Text(text = stringResource(parameter.labelRes), color = if (selected) Color.Black else Color.White, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal)
-                Text(text = "${snapseedValuePercent(parameter.value, parameter.range)}", color = if (selected) Color.Black else Color.White)
+                Text(text = "${snapseedValuePercent(parameter.value, parameter.range)}%", color = if (selected) Color.Black else Color.White)
             }
+        }
+    }
+}
+
+@Composable
+private fun GestureContextSheet(
+    title: String,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+            .heightIn(max = 360.dp),
+        shape = RoundedCornerShape(20.dp),
+        color = Color(0xE80B0B0C),
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+        ) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(title, color = Color.White, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                TextButton(onClick = onDismiss) {
+                    Text(stringResource(R.string.close), color = Color(0xFFFFC857))
+                }
+            }
+            content()
         }
     }
 }
@@ -1678,48 +2124,12 @@ private fun ToolGrid(selected: EditorTool, onSelect: (EditorTool) -> Unit) {
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         gridItems(EditorTool.values().toList()) { tool ->
-            val (label, icon) = when (tool) {
-                EditorTool.Looks -> stringResource(R.string.fossin_looks) to AppIcons.AutoAwesome
-                EditorTool.Tune -> stringResource(R.string.fossin_tune) to AppIcons.Tune
-                EditorTool.Details -> stringResource(R.string.fossin_details) to AppIcons.Contrast
-                EditorTool.TonalContrast -> stringResource(R.string.fossin_tonal_contrast) to AppIcons.Contrast
-                EditorTool.Curves -> stringResource(R.string.recipe_tab_curve) to AppIcons.Contrast
-                EditorTool.WhiteBalance -> stringResource(R.string.fossin_white_balance) to AppIcons.Tune
-                EditorTool.Crop -> stringResource(R.string.crop) to AppIcons.Crop169
-                EditorTool.Expand -> stringResource(R.string.fossin_expand) to AppIcons.Crop169
-                EditorTool.Perspective -> stringResource(R.string.fossin_perspective) to AppIcons.Crop169
-                EditorTool.Rotate -> stringResource(R.string.rotate) to AppIcons.ScreenRotation
-                EditorTool.Color -> stringResource(R.string.recipe_tab_color) to AppIcons.Palette
-                EditorTool.Hsl -> stringResource(R.string.fossin_hsl) to AppIcons.Palette
-                EditorTool.Selective -> stringResource(R.string.fossin_selective) to AppIcons.Tune
-                EditorTool.Brush -> stringResource(R.string.fossin_brush) to AppIcons.Tune
-                EditorTool.Healing -> stringResource(R.string.fossin_healing) to AppIcons.AutoAwesome
-                EditorTool.LensBlur -> stringResource(R.string.fossin_lens_blur) to AppIcons.AutoAwesome
-                EditorTool.Vignette -> stringResource(R.string.recipe_param_vignette) to AppIcons.FilterVintage
-                EditorTool.Grain -> stringResource(R.string.recipe_param_film_grain) to AppIcons.Grain
-                EditorTool.Bloom -> stringResource(R.string.recipe_param_bloom) to AppIcons.AutoAwesome
-                EditorTool.Effects -> stringResource(R.string.fossin_effects) to AppIcons.FilterVintage
-                EditorTool.HdrScape -> stringResource(R.string.fossin_hdr_scape) to AppIcons.AutoAwesome
-                EditorTool.GlamourGlow -> stringResource(R.string.fossin_glamour_glow) to AppIcons.AutoAwesome
-                EditorTool.Drama -> stringResource(R.string.fossin_drama) to AppIcons.AutoAwesome
-                EditorTool.Vintage -> stringResource(R.string.fossin_vintage) to AppIcons.FilterVintage
-                EditorTool.GrainyFilm -> stringResource(R.string.fossin_grainy_film) to AppIcons.Grain
-                EditorTool.Retrolux -> stringResource(R.string.fossin_retrolux) to AppIcons.FilterVintage
-                EditorTool.Grunge -> stringResource(R.string.fossin_grunge) to AppIcons.FilterVintage
-                EditorTool.BlackWhite -> stringResource(R.string.fossin_black_white) to AppIcons.Contrast
-                EditorTool.Noir -> stringResource(R.string.fossin_noir) to AppIcons.Contrast
-                EditorTool.Portrait -> stringResource(R.string.fossin_portrait) to AppIcons.AutoAwesome
-                EditorTool.FaceEnhance -> stringResource(R.string.fossin_face_enhance) to AppIcons.AutoAwesome
-                EditorTool.HeadPose -> stringResource(R.string.fossin_head_pose) to AppIcons.AutoAwesome
-                EditorTool.Frame -> stringResource(R.string.fossin_frame) to AppIcons.Crop169
-                EditorTool.DoubleExposure -> stringResource(R.string.fossin_double_exposure) to AppIcons.AddPhotoAlternate
-                EditorTool.Text -> stringResource(R.string.fossin_text) to AppIcons.Article
-            }
+            val presentation = editorToolPresentation(tool)
             FilterChip(
                 selected = selected == tool,
                 onClick = { onSelect(tool) },
-                label = { Text(text = label, maxLines = 1, fontSize = 10.sp) },
-                leadingIcon = { Icon(imageVector = icon, contentDescription = null, modifier = Modifier.size(14.dp)) },
+                label = { Text(text = stringResource(presentation.labelRes), maxLines = 1, fontSize = 10.sp) },
+                leadingIcon = { Icon(imageVector = presentation.icon, contentDescription = null, modifier = Modifier.size(14.dp)) },
                 modifier = Modifier.fillMaxWidth(),
             )
         }

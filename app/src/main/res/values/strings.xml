@@ -95,6 +95,7 @@
     <string name="fossin_straighten">Straighten</string>
     <string name="fossin_gestures_on">Gestures on</string>
     <string name="fossin_gestures_off">Gestures off</string>
+    <string name="fossin_gesture_options">Options</string>
     <string name="fossin_gesture_percent">%1$d%%</string>
     <string name="fossin_imported_lut">Imported LUT</string>
     <string name="fossin_undo">Undo</string>
