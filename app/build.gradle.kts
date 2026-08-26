@@ -26,8 +26,8 @@ android {
         applicationId = "org.foss.photoeditor"
         minSdk = 30
         targetSdk = 36
-        versionCode = 155
-        versionName = "1.28.2"
+        versionCode = 156
+        versionName = "1.28.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         
@@ -89,8 +89,14 @@ android {
         create("preview") {
             initWith(getByName("release"))
             // The preview artifact is directly installable for testers. F-Droid
-            // continues to consume the unsigned release artifact above.
-            signingConfig = signingConfigs.getByName("debug")
+            // continues to consume the unsigned release artifact above. CI
+            // supplies a persistent key through encrypted repository secrets,
+            // so Preview users can update without uninstalling.
+            signingConfig = if (project.findProperty("RELEASE_STORE_FILE") != null) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
             matchingFallbacks += listOf("release")
         }
     }

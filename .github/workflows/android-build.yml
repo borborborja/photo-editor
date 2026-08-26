@@ -55,7 +55,19 @@ jobs:
         run: ./gradlew --no-daemon :app:assembleDefaultRelease
 
       - name: Build installable preview APK
-        run: ./gradlew --no-daemon :app:assembleDefaultPreview
+        env:
+          PREVIEW_KEYSTORE_BASE64: ${{ secrets.PREVIEW_KEYSTORE_BASE64 }}
+          PREVIEW_KEYSTORE_PASSWORD: ${{ secrets.PREVIEW_KEYSTORE_PASSWORD }}
+          PREVIEW_KEY_ALIAS: ${{ secrets.PREVIEW_KEY_ALIAS }}
+          PREVIEW_KEY_PASSWORD: ${{ secrets.PREVIEW_KEY_PASSWORD }}
+        run: |
+          test -n "$PREVIEW_KEYSTORE_BASE64"
+          printf '%s' "$PREVIEW_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/photo-editor-preview.jks"
+          ./gradlew --no-daemon :app:assembleDefaultPreview \
+            -PRELEASE_STORE_FILE="$RUNNER_TEMP/photo-editor-preview.jks" \
+            -PRELEASE_STORE_PASSWORD="$PREVIEW_KEYSTORE_PASSWORD" \
+            -PRELEASE_KEY_ALIAS="$PREVIEW_KEY_ALIAS" \
+            -PRELEASE_KEY_PASSWORD="$PREVIEW_KEY_PASSWORD"
 
       - name: Verify APK identity and permissions
         env:
