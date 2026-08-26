@@ -100,8 +100,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.hinnka.mycamera.MainActivity
 import com.hinnka.mycamera.R
+import com.hinnka.mycamera.gallery.GalleryRepository
 import com.hinnka.mycamera.lut.LutConfig
 import com.hinnka.mycamera.lut.LutImageProcessor
 import com.hinnka.mycamera.lut.LutParser
@@ -224,6 +228,76 @@ private const val GESTURE_DIRECTION_TURN_SLOP_DP = 12f
 private const val GESTURE_FULL_RANGE_DP = 240f
 private const val GESTURE_PARAMETER_STEP_DP = 52f
 private const val GESTURE_PREVIEW_MAX_EDGE = 1024
+private const val FOSSIN_LIBRARY_PREFERENCES = "fossin_library_preferences"
+private const val FOSSIN_LIBRARY_ENTRIES = "recent_entries"
+private const val FOSSIN_LIBRARY_MAX_ENTRIES = 72
+
+private enum class FossinLibraryKind(@StringRes val labelRes: Int) {
+    Imported(R.string.fossin_library_imported),
+    Edited(R.string.fossin_library_edited),
+    Camera(R.string.fossin_library_camera_photo),
+}
+
+private data class FossinLibraryItem(
+    val uri: Uri,
+    val kind: FossinLibraryKind,
+    val timestamp: Long,
+    val name: String? = null,
+)
+
+/**
+ * Small local-only index for photos the editor has opened or exported. Camera photos are
+ * intentionally read from the camera gallery instead, so this never tries to duplicate them.
+ */
+private object FossinLibraryStore {
+    fun entries(context: Context): List<FossinLibraryItem> {
+        val prefs = context.applicationContext.getSharedPreferences(
+            FOSSIN_LIBRARY_PREFERENCES,
+            Context.MODE_PRIVATE,
+        )
+        return prefs.getStringSet(FOSSIN_LIBRARY_ENTRIES, emptySet())
+            .orEmpty()
+            .mapNotNull(::decode)
+            .sortedByDescending(FossinLibraryItem::timestamp)
+    }
+
+    fun record(context: Context, uri: Uri, kind: FossinLibraryKind) {
+        if (uri.scheme !in setOf("content", "file")) return
+        val uniqueEntries = entries(context)
+            .filterNot { it.uri == uri }
+            .toMutableList()
+        uniqueEntries += FossinLibraryItem(
+            uri = uri,
+            kind = kind,
+            timestamp = System.currentTimeMillis(),
+        )
+        val encoded = uniqueEntries
+            .sortedByDescending(FossinLibraryItem::timestamp)
+            .take(FOSSIN_LIBRARY_MAX_ENTRIES)
+            .map(::encode)
+            .toSet()
+        context.applicationContext
+            .getSharedPreferences(FOSSIN_LIBRARY_PREFERENCES, Context.MODE_PRIVATE)
+            .edit()
+            .putStringSet(FOSSIN_LIBRARY_ENTRIES, encoded)
+            .apply()
+    }
+
+    private fun encode(entry: FossinLibraryItem): String = listOf(
+        entry.timestamp.toString(),
+        entry.kind.name,
+        Uri.encode(entry.uri.toString()),
+    ).joinToString("|")
+
+    private fun decode(value: String): FossinLibraryItem? = runCatching {
+        val parts = value.split('|', limit = 3)
+        FossinLibraryItem(
+            uri = Uri.parse(Uri.decode(parts[2])),
+            kind = FossinLibraryKind.valueOf(parts[1]),
+            timestamp = parts[0].toLong(),
+        )
+    }.getOrNull()
+}
 
 internal enum class SnapseedParameterDirection { Previous, Next }
 
@@ -998,6 +1072,7 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var source by remember { mutableStateOf<Bitmap?>(null) }
+    var showingHall by rememberSaveable { mutableStateOf(initialUri == null) }
     var overlay by remember { mutableStateOf<Bitmap?>(null) }
     var sourceUri by rememberSaveable { mutableStateOf<Uri?>(initialUri) }
     var rendered by remember { mutableStateOf<Bitmap?>(null) }
@@ -1135,7 +1210,9 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
             scope.launch {
                 loadImage(context, selectedUri) { bitmap ->
                     sourceUri = selectedUri
+                    FossinLibraryStore.record(context, selectedUri, FossinLibraryKind.Imported)
                     acceptImage(bitmap)
+                    showingHall = false
                 }
             }
         }
@@ -1195,6 +1272,10 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
                     }
                     saved = withContext(Dispatchers.IO) {
                         context.contentResolver.openOutputStream(target)?.use { output.compress(Bitmap.CompressFormat.JPEG, 96, it) } == true
+                    }
+                    if (saved) {
+                        persistReadPermission(context, target)
+                        FossinLibraryStore.record(context, target, FossinLibraryKind.Edited)
                     }
                 } catch (_: Throwable) {
                     saved = false
@@ -1266,6 +1347,9 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
         if (source != null) return@LaunchedEffect
         loadImage(context, uri) { bitmap ->
             sourceUri = uri
+            if (uri == initialUri) {
+                FossinLibraryStore.record(context, uri, FossinLibraryKind.Imported)
+            }
             acceptImage(bitmap, resetEdits = editState == EditorState())
         }
     }
@@ -1322,7 +1406,47 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
         isRendering = false
     }
 
-    BackHandler { onFinish() }
+    fun leaveEditor() {
+        if (initialUri != null) {
+            onFinish()
+            return
+        }
+        finishGesture()
+        source = null
+        sourceUri = null
+        rendered = null
+        overlay = null
+        editState = EditorState()
+        undoStack.clear()
+        redoStack.clear()
+        showOriginal = false
+        showGestureToolPanel = false
+        showingHall = true
+    }
+    fun openFromHall(uri: Uri) {
+        finishGesture()
+        source = null
+        rendered = null
+        overlay = null
+        sourceUri = uri
+        editState = EditorState()
+        undoStack.clear()
+        redoStack.clear()
+        showOriginal = false
+        showGestureToolPanel = false
+        showingHall = false
+    }
+    if (showingHall) {
+        BackHandler { onFinish() }
+        FossinHall(
+            onImport = { imagePicker.launch(arrayOf("image/*")) },
+            onOpenCamera = onOpenCamera,
+            onOpenPhoto = ::openFromHall,
+        )
+        return
+    }
+
+    BackHandler { leaveEditor() }
     val currentEditState by rememberUpdatedState(editState)
     val gestureParameters = snapseedGestureParameters(tool, editState, selectedHslChannel, overlay != null)
     val activeGestureParameter = gestureParameters.firstOrNull { it.key == selectedGestureParameterKey }
@@ -1384,7 +1508,7 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
                         canUndo = undoStack.isNotEmpty(),
                         canRedo = redoStack.isNotEmpty(),
                         showingOriginal = showOriginal,
-                        onBack = onFinish,
+                        onBack = ::leaveEditor,
                         onImport = { imagePicker.launch(arrayOf("image/*")) },
                         onExport = { exportPicker.launch("photo-editor-edit.jpg") },
                         onShare = { shareEditedImage() },
@@ -1717,7 +1841,7 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
                     canRedo = redoStack.isNotEmpty(),
                     showingOriginal = showOriginal,
                     gestureModeEnabled = gestureModeEnabled,
-                    onBack = onFinish,
+                    onBack = ::leaveEditor,
                     onImport = { imagePicker.launch(arrayOf("image/*")) },
                     onExport = { exportPicker.launch("photo-editor-edit.jpg") },
                     onShare = { shareEditedImage() },
@@ -1870,6 +1994,264 @@ private fun EmptyEditor(onImport: () -> Unit, onOpenCamera: () -> Unit) {
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Button(onClick = onImport, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF6B35))) { Text(stringResource(R.string.fossin_import)) }
             TextButton(onClick = onOpenCamera) { Text(stringResource(R.string.fossin_open_camera), color = Color.White) }
+        }
+    }
+}
+
+@Composable
+private fun FossinHall(
+    onImport: () -> Unit,
+    onOpenCamera: () -> Unit,
+    onOpenPhoto: (Uri) -> Unit,
+) {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var importedAndEdited by remember { mutableStateOf<List<FossinLibraryItem>>(emptyList()) }
+    var cameraPhotos by remember { mutableStateOf<List<FossinLibraryItem>>(emptyList()) }
+    var isLoading by remember { mutableStateOf(true) }
+    var refreshToken by remember { mutableStateOf(0) }
+    fun refreshLibrary() {
+        refreshToken += 1
+    }
+
+    LaunchedEffect(refreshToken) {
+        isLoading = true
+        val library = withContext(Dispatchers.IO) {
+            val recent = FossinLibraryStore.entries(context)
+            val camera = runCatching {
+                GalleryRepository(context.applicationContext)
+                    .getPhotosSync()
+                    .asSequence()
+                    .filter { it.isImage }
+                    .map {
+                        FossinLibraryItem(
+                            uri = it.uri,
+                            kind = FossinLibraryKind.Camera,
+                            timestamp = it.dateAdded,
+                            name = it.displayName,
+                        )
+                    }
+                    .take(36)
+                    .toList()
+            }.getOrDefault(emptyList())
+            recent to camera
+        }
+        importedAndEdited = library.first
+        cameraPhotos = library.second
+        isLoading = false
+    }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) refreshLibrary()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    Surface(Modifier.fillMaxSize(), color = Color(0xFF0B0B0C)) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(22.dp),
+        ) {
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = stringResource(R.string.app_name),
+                        color = Color.White,
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        text = stringResource(R.string.fossin_library_subtitle),
+                        color = Color(0xFFAAAAB0),
+                        fontSize = 14.sp,
+                    )
+                }
+                IconButton(onClick = ::refreshLibrary) {
+                    Icon(
+                        imageVector = AppIcons.RestartAlt,
+                        contentDescription = stringResource(R.string.fossin_library_refresh),
+                        tint = Color.White,
+                    )
+                }
+            }
+
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                FossinHallAction(
+                    modifier = Modifier.weight(1f),
+                    icon = AppIcons.CameraAlt,
+                    title = stringResource(R.string.fossin_open_camera),
+                    subtitle = stringResource(R.string.fossin_library_camera_action),
+                    onClick = onOpenCamera,
+                )
+                FossinHallAction(
+                    modifier = Modifier.weight(1f),
+                    icon = AppIcons.AddPhotoAlternate,
+                    title = stringResource(R.string.fossin_import),
+                    subtitle = stringResource(R.string.fossin_library_import_action),
+                    onClick = onImport,
+                )
+            }
+
+            FossinHallSection(
+                title = stringResource(R.string.fossin_library_imported_edited),
+                emptyMessage = stringResource(R.string.fossin_library_imported_empty),
+                photos = importedAndEdited,
+                isLoading = isLoading,
+                onOpenPhoto = onOpenPhoto,
+            )
+            FossinHallSection(
+                title = stringResource(R.string.fossin_library_camera_photos),
+                emptyMessage = stringResource(R.string.fossin_library_camera_empty),
+                photos = cameraPhotos,
+                isLoading = isLoading,
+                onOpenPhoto = onOpenPhoto,
+            )
+        }
+    }
+}
+
+@Composable
+private fun FossinHallAction(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier
+            .height(124.dp)
+            .clip(RoundedCornerShape(22.dp))
+            .clickable(onClick = onClick),
+        color = Color(0xFF1A1A1E),
+        shape = RoundedCornerShape(22.dp),
+    ) {
+        Column(
+            Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Icon(icon, null, tint = Color(0xFFFF7A45), modifier = Modifier.size(28.dp))
+            Text(text = title, color = Color.White, fontWeight = FontWeight.SemiBold)
+            Text(text = subtitle, color = Color(0xFFA9A9AE), fontSize = 12.sp, maxLines = 1)
+        }
+    }
+}
+
+@Composable
+private fun FossinHallSection(
+    title: String,
+    emptyMessage: String,
+    photos: List<FossinLibraryItem>,
+    isLoading: Boolean,
+    onOpenPhoto: (Uri) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text(
+            text = title,
+            color = Color.White,
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.SemiBold,
+        )
+        when {
+            photos.isNotEmpty() -> LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                items(
+                    items = photos,
+                    key = { "${it.kind.name}:${it.uri}" },
+                ) { item ->
+                    FossinHallPhotoCard(item = item, onClick = { onOpenPhoto(item.uri) })
+                }
+            }
+            else -> Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 88.dp),
+                color = Color(0xFF151518),
+                shape = RoundedCornerShape(18.dp),
+            ) {
+                Row(
+                    Modifier.padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Icon(
+                        imageVector = if (isLoading) AppIcons.AutoAwesome else AppIcons.PhotoLibrary,
+                        contentDescription = null,
+                        tint = Color(0xFF87878E),
+                    )
+                    Text(
+                        text = if (isLoading) stringResource(R.string.fossin_library_loading) else emptyMessage,
+                        color = Color(0xFFB5B5BB),
+                        fontSize = 14.sp,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FossinHallPhotoCard(item: FossinLibraryItem, onClick: () -> Unit) {
+    val context = LocalContext.current
+    var preview by remember(item.uri) { mutableStateOf<Bitmap?>(null) }
+    LaunchedEffect(item.uri) {
+        preview = loadBitmap(context, item.uri, maxEdge = 384)
+    }
+    Surface(
+        modifier = Modifier
+            .width(140.dp)
+            .height(176.dp)
+            .clip(RoundedCornerShape(18.dp))
+            .clickable(onClick = onClick),
+        color = Color(0xFF1A1A1E),
+        shape = RoundedCornerShape(18.dp),
+    ) {
+        Box(Modifier.fillMaxSize()) {
+            preview?.let { bitmap ->
+                Image(
+                    bitmap = bitmap.asImageBitmap(),
+                    contentDescription = item.name ?: stringResource(item.kind.labelRes),
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop,
+                )
+            } ?: Icon(
+                imageVector = AppIcons.Image,
+                contentDescription = null,
+                tint = Color(0xFF77777E),
+                modifier = Modifier.align(Alignment.Center).size(34.dp),
+            )
+            Column(
+                Modifier
+                    .align(Alignment.BottomStart)
+                    .fillMaxWidth()
+                    .background(Color(0xB8000000))
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+            ) {
+                Text(
+                    text = item.name ?: stringResource(item.kind.labelRes),
+                    color = Color.White,
+                    fontSize = 12.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = stringResource(item.kind.labelRes),
+                    color = Color(0xFFD0D0D5),
+                    fontSize = 11.sp,
+                    maxLines = 1,
+                )
+            }
         }
     }
 }
@@ -3547,7 +3929,11 @@ private fun scaledPreviewBitmap(bitmap: Bitmap, maxEdge: Int): Bitmap {
 }
 
 private suspend fun loadBitmap(context: android.content.Context, uri: Uri, maxEdge: Int): Bitmap? = withContext(Dispatchers.IO) {
-        if (android.os.Build.VERSION.SDK_INT >= 28) {
+        if (uri.scheme == "file") {
+            uri.path?.let(BitmapFactory::decodeFile)?.let { bitmap ->
+                if (maxEdge > 0) scaledPreviewBitmap(bitmap, maxEdge) else bitmap
+            }
+        } else if (android.os.Build.VERSION.SDK_INT >= 28) {
             ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.contentResolver, uri)) { decoder, info, _ ->
                 if (maxEdge > 0) {
                     val scale = minOf(1f, maxEdge.toFloat() / maxOf(info.size.width, info.size.height))
