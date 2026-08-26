@@ -28,6 +28,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -57,6 +58,9 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -101,6 +105,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.annotation.StringRes
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
@@ -147,7 +152,7 @@ class FossinEditorActivity : ComponentActivity() {
         )
         setContent {
             PhotonCameraTheme {
-                FossinEditor(
+                FossinStackEditor(
                     initialUri = intent.sharedImageUri() ?: intent.data,
                     onOpenCamera = { startActivity(Intent(this, MainActivity::class.java)) },
                     onFinish = { finish() }
@@ -553,6 +558,16 @@ private data class EditorState(
     val chromaticAberration: Float = 0f,
     val noise: Float = 0f,
     val lowRes: Float = 0f,
+    val gradingShadowHue: Float = 0f,
+    val gradingShadowAmount: Float = 0f,
+    val gradingShadowLuminance: Float = 0f,
+    val gradingMidtoneHue: Float = 0f,
+    val gradingMidtoneAmount: Float = 0f,
+    val gradingMidtoneLuminance: Float = 0f,
+    val gradingHighlightHue: Float = 0f,
+    val gradingHighlightAmount: Float = 0f,
+    val gradingHighlightLuminance: Float = 0f,
+    val gradingBlending: Float = 0.5f,
     val hsl: Map<HslChannel, HslValue> = HslChannel.values().associateWith { HslValue() },
     val curves: Map<CurveChannel, List<CurvePoint>> = defaultCurves,
     val snapEffects: Map<SnapEffect, Float> = defaultSnapEffects,
@@ -654,6 +669,16 @@ private val editorStateSaver = Saver<EditorState, Bundle>(
             putFloat("chromaticAberration", state.chromaticAberration)
             putFloat("noise", state.noise)
             putFloat("lowRes", state.lowRes)
+            putFloat("gradingShadowHue", state.gradingShadowHue)
+            putFloat("gradingShadowAmount", state.gradingShadowAmount)
+            putFloat("gradingShadowLuminance", state.gradingShadowLuminance)
+            putFloat("gradingMidtoneHue", state.gradingMidtoneHue)
+            putFloat("gradingMidtoneAmount", state.gradingMidtoneAmount)
+            putFloat("gradingMidtoneLuminance", state.gradingMidtoneLuminance)
+            putFloat("gradingHighlightHue", state.gradingHighlightHue)
+            putFloat("gradingHighlightAmount", state.gradingHighlightAmount)
+            putFloat("gradingHighlightLuminance", state.gradingHighlightLuminance)
+            putFloat("gradingBlending", state.gradingBlending)
             putFloatArray("hsl", HslChannel.values().flatMap { channel ->
                 val value = state.hsl[channel] ?: HslValue()
                 listOf(value.hue, value.chroma, value.lightness)
@@ -786,6 +811,16 @@ private val editorStateSaver = Saver<EditorState, Bundle>(
             chromaticAberration = bundle.getFloat("chromaticAberration", 0f),
             noise = bundle.getFloat("noise", 0f),
             lowRes = bundle.getFloat("lowRes", 0f),
+            gradingShadowHue = bundle.getFloat("gradingShadowHue", 0f),
+            gradingShadowAmount = bundle.getFloat("gradingShadowAmount", 0f),
+            gradingShadowLuminance = bundle.getFloat("gradingShadowLuminance", 0f),
+            gradingMidtoneHue = bundle.getFloat("gradingMidtoneHue", 0f),
+            gradingMidtoneAmount = bundle.getFloat("gradingMidtoneAmount", 0f),
+            gradingMidtoneLuminance = bundle.getFloat("gradingMidtoneLuminance", 0f),
+            gradingHighlightHue = bundle.getFloat("gradingHighlightHue", 0f),
+            gradingHighlightAmount = bundle.getFloat("gradingHighlightAmount", 0f),
+            gradingHighlightLuminance = bundle.getFloat("gradingHighlightLuminance", 0f),
+            gradingBlending = bundle.getFloat("gradingBlending", 0.5f),
             hsl = hsl,
             curves = curves,
             snapEffects = snapEffects,
@@ -3734,6 +3769,16 @@ private suspend fun renderEditorBitmap(
                 chromaticAberration = state.chromaticAberration,
                 noise = state.noise,
                 lowRes = state.lowRes,
+                gradingShadowHue = state.gradingShadowHue,
+                gradingShadowAmount = state.gradingShadowAmount,
+                gradingShadowLuminance = state.gradingShadowLuminance,
+                gradingMidtoneHue = state.gradingMidtoneHue,
+                gradingMidtoneAmount = state.gradingMidtoneAmount,
+                gradingMidtoneLuminance = state.gradingMidtoneLuminance,
+                gradingHighlightHue = state.gradingHighlightHue,
+                gradingHighlightAmount = state.gradingHighlightAmount,
+                gradingHighlightLuminance = state.gradingHighlightLuminance,
+                gradingBlending = state.gradingBlending,
                 redHue = red.hue,
                 redChroma = red.chroma,
                 redLightness = red.lightness,
@@ -4398,4 +4443,2153 @@ private fun persistReadPermission(context: android.content.Context, uri: Uri) {
     runCatching {
         context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
     }
+}
+
+/*
+ * Stack editor -------------------------------------------------------------------------------
+ *
+ * The older editor above intentionally stays in this source file to keep historical project
+ * data readable by old builds. New documents use the operation stack below and never mutate the
+ * source bitmap. Keeping the stack implementation beside the existing filters lets every effect
+ * use the same colour pipeline without flattening previous operations into one recipe.
+ */
+
+private const val FOSSIN_STACK_PROJECTS_DIRECTORY = "fossin-stack-projects"
+private const val FOSSIN_STACK_SCHEMA_VERSION = 2
+private const val STACK_MASK_EDGE = 512
+
+private enum class StackEditorTab { Styles, Tools, Export }
+private enum class StackExportMode { KeepProject, PhotoOnly }
+
+private enum class StackToolCategory(@StringRes val labelRes: Int) {
+    All(R.string.fossin_tool_category_all),
+    Enhance(R.string.fossin_tool_category_enhance),
+    Correct(R.string.fossin_tool_category_correct),
+    Style(R.string.fossin_tool_category_style),
+}
+
+private enum class StackTool(
+    @StringRes val labelRes: Int,
+    val category: StackToolCategory,
+    val isGlobalGeometry: Boolean = false,
+    val isNew: Boolean = false,
+) {
+    Looks(R.string.fossin_looks, StackToolCategory.Style),
+    Tune(R.string.fossin_tune, StackToolCategory.Enhance),
+    Details(R.string.fossin_details, StackToolCategory.Enhance),
+    Dehaze(R.string.fossin_dehaze, StackToolCategory.Enhance, isNew = true),
+    TonalContrast(R.string.fossin_tonal_contrast, StackToolCategory.Enhance),
+    Curves(R.string.recipe_tab_curve, StackToolCategory.Correct),
+    WhiteBalance(R.string.fossin_white_balance, StackToolCategory.Correct),
+    Color(R.string.recipe_tab_color, StackToolCategory.Correct),
+    ColorGrading(R.string.fossin_color_grading, StackToolCategory.Correct, isNew = true),
+    LensBlur(R.string.fossin_lens_blur, StackToolCategory.Enhance),
+    Vignette(R.string.recipe_param_vignette, StackToolCategory.Enhance),
+    Selective(R.string.fossin_selective, StackToolCategory.Correct),
+    Brush(R.string.fossin_brush, StackToolCategory.Correct),
+    Healing(R.string.fossin_healing, StackToolCategory.Correct),
+    Perspective(R.string.fossin_perspective, StackToolCategory.Correct, isGlobalGeometry = true),
+    Crop(R.string.crop, StackToolCategory.Correct, isGlobalGeometry = true),
+    Expand(R.string.fossin_expand, StackToolCategory.Correct, isGlobalGeometry = true),
+    HeadPose(R.string.fossin_head_pose, StackToolCategory.Correct, isGlobalGeometry = true),
+    Grain(R.string.recipe_param_film_grain, StackToolCategory.Style),
+    Bloom(R.string.recipe_param_bloom, StackToolCategory.Style),
+    Hdr(R.string.fossin_hdr_scape, StackToolCategory.Enhance),
+    ChromaticAberration(R.string.fossin_chromatic_aberration, StackToolCategory.Correct),
+    Halation(R.string.fossin_halation, StackToolCategory.Style),
+    Vintage(R.string.fossin_vintage, StackToolCategory.Style),
+    BlackWhite(R.string.fossin_black_white, StackToolCategory.Style),
+    Drama(R.string.fossin_drama, StackToolCategory.Style),
+    Noir(R.string.fossin_noir, StackToolCategory.Style),
+    Grunge(R.string.fossin_grunge, StackToolCategory.Style),
+    DoubleExposure(R.string.fossin_double_exposure, StackToolCategory.Style),
+    Frame(R.string.fossin_frame, StackToolCategory.Style, isGlobalGeometry = true),
+    Text(R.string.fossin_text, StackToolCategory.Style, isGlobalGeometry = true),
+}
+
+private data class StackMask(
+    val alpha: ByteArray,
+    val width: Int,
+    val height: Int,
+    val inverted: Boolean = false,
+    val feather: Float = 0.08f,
+) {
+    init {
+        require(alpha.size == width * height)
+    }
+
+    val signature: Int get() = 31 * alpha.contentHashCode() + if (inverted) 1 else 0
+}
+
+private data class StackOperation(
+    val id: String = UUID.randomUUID().toString(),
+    val tool: StackTool,
+    val state: EditorState = EditorState(),
+    val preset: String? = null,
+    val mask: StackMask? = null,
+    val enabled: Boolean = true,
+)
+
+private data class StackProjectSummary(
+    val id: String,
+    val uri: Uri,
+    val title: String,
+    val updatedAt: Long,
+)
+
+private data class StackProject(
+    val id: String,
+    val uri: Uri,
+    val title: String,
+    val operations: List<StackOperation>,
+)
+
+private data class StackGestureParameter(
+    val key: String,
+    @StringRes val labelRes: Int,
+    val value: Float,
+    val range: ClosedFloatingPointRange<Float>,
+    val update: (EditorState, Float) -> EditorState,
+)
+
+private object StackProjectStore {
+    private val gson = GsonBuilder().setPrettyPrinting().create()
+    private val writeMutex = Mutex()
+
+    fun newId(): String = UUID.randomUUID().toString()
+
+    suspend fun save(
+        context: Context,
+        projectId: String,
+        sourceUri: Uri,
+        operations: List<StackOperation>,
+    ): Boolean = writeMutex.withLock {
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val directory = projectDirectory(context, projectId).apply { mkdirs() }
+                val existing = readManifest(directory)
+                val extension = extensionFor(context, sourceUri, "jpg")
+                val originalName = existing?.string("originalFile") ?: "original.$extension"
+                val original = File(directory, originalName)
+                if (!original.isFile) copyStackUri(context, sourceUri, original)
+                val serialized = JsonArray()
+                operations.forEach { operation ->
+                    val operationDir = File(directory, "assets").apply { mkdirs() }
+                    val lutName = copyStackAsset(context, operationDir, operation.state.lutUri, "${operation.id}-look", "cube")
+                    val overlayName = copyStackAsset(context, operationDir, operation.state.overlayUri, "${operation.id}-overlay", "jpg")
+                    val storedState = operation.state.copy(
+                        lut = null,
+                        lutUri = lutName?.let { Uri.fromFile(File(operationDir, it)).toString() },
+                        overlayUri = overlayName?.let { Uri.fromFile(File(operationDir, it)).toString() },
+                    )
+                    val bundle = with(editorStateSaver) { FossinProjectSaverScope.save(storedState) } ?: Bundle()
+                    val item = JsonObject().apply {
+                        addProperty("id", operation.id)
+                        addProperty("tool", operation.tool.name)
+                        addProperty("enabled", operation.enabled)
+                        operation.preset?.let { addProperty("preset", it) }
+                        addProperty("state", encodeBundle(bundle))
+                        operation.mask?.let { mask ->
+                            val file = File(directory, "masks/${operation.id}.png")
+                            writeStackMask(file, mask)
+                            add("mask", JsonObject().apply {
+                                addProperty("file", "masks/${operation.id}.png")
+                                addProperty("inverted", mask.inverted)
+                                addProperty("feather", mask.feather)
+                            })
+                        }
+                    }
+                    serialized.add(item)
+                }
+                val manifest = JsonObject().apply {
+                    addProperty("schemaVersion", FOSSIN_STACK_SCHEMA_VERSION)
+                    addProperty("id", projectId)
+                    addProperty("title", displayName(context, sourceUri))
+                    addProperty("updatedAt", System.currentTimeMillis())
+                    addProperty("originalFile", originalName)
+                    add("operations", serialized)
+                }
+                writeStackText(File(directory, FOSSIN_PROJECT_MANIFEST_FILE), gson.toJson(manifest))
+                true
+            }.getOrDefault(false)
+        }
+    }
+
+    suspend fun load(context: Context, projectId: String): StackProject? = withContext(Dispatchers.IO) {
+        val directory = projectDirectory(context, projectId)
+        val manifest = readManifest(directory) ?: return@withContext null
+        if (manifest.int("schemaVersion") != FOSSIN_STACK_SCHEMA_VERSION) return@withContext null
+        val original = manifest.string("originalFile")?.let { File(directory, it) }?.takeIf(File::isFile)
+            ?: return@withContext null
+        val operations = manifest.getAsJsonArray("operations")?.mapNotNull { value ->
+            runCatching {
+                val item = value.asJsonObject
+                val state = item.string("state")?.let(::decodeBundle)?.let(editorStateSaver::restore) ?: return@runCatching null
+                val mask = item.getAsJsonObject("mask")?.let { maskJson ->
+                    maskJson.string("file")?.let {
+                        readStackMask(File(directory, it), maskJson.bool("inverted", false), maskJson.float("feather", 0.08f))
+                    }
+                }
+                StackOperation(
+                    id = item.string("id") ?: return@runCatching null,
+                    tool = item.string("tool")?.let { enumValueOf<StackTool>(it) } ?: return@runCatching null,
+                    state = state,
+                    preset = item.string("preset"),
+                    enabled = item.bool("enabled", true),
+                    mask = mask,
+                )
+            }.getOrNull()
+        }.orEmpty()
+        StackProject(projectId, Uri.fromFile(original), manifest.string("title") ?: original.name, operations)
+    }
+
+    suspend fun list(context: Context): List<StackProjectSummary> = withContext(Dispatchers.IO) {
+        root(context).listFiles()?.asSequence()?.filter(File::isDirectory)?.mapNotNull { directory ->
+            val manifest = readManifest(directory) ?: return@mapNotNull null
+            if (manifest.int("schemaVersion") != FOSSIN_STACK_SCHEMA_VERSION) return@mapNotNull null
+            val original = manifest.string("originalFile")?.let { File(directory, it) }?.takeIf(File::isFile)
+                ?: return@mapNotNull null
+            StackProjectSummary(
+                id = directory.name,
+                uri = Uri.fromFile(original),
+                title = manifest.string("title") ?: original.name,
+                updatedAt = manifest.long("updatedAt", original.lastModified()),
+            )
+        }?.sortedByDescending(StackProjectSummary::updatedAt)?.toList().orEmpty()
+    }
+
+    /**
+     * Writes a portable, editable package. The rendered JPEG is deliberately not included here:
+     * the package is the immutable original plus the complete operation stack, masks and the
+     * local LUT/overlay assets required to render it again.
+     */
+    suspend fun exportArchive(context: Context, projectId: String, destination: Uri): Boolean = withContext(Dispatchers.IO) {
+        runCatching {
+            val directory = projectDirectory(context, projectId)
+            val manifest = readManifest(directory) ?: return@runCatching false
+            val original = manifest.string("originalFile")?.let { File(directory, it) }?.takeIf(File::isFile)
+                ?: return@runCatching false
+            val portableManifest = manifest.deepCopy().apply {
+                addProperty("archiveFormat", "photo-editor-stack-package")
+                addProperty("originalFile", "original/${original.name}")
+                add("archiveAssets", JsonObject().apply {
+                    addProperty("original", "original/${original.name}")
+                    addProperty("operations", "${FOSSIN_PROJECT_MANIFEST_FILE}")
+                    addProperty("masks", "masks/")
+                    addProperty("assets", "assets/")
+                })
+            }
+            context.contentResolver.openOutputStream(destination)?.use { output ->
+                ZipOutputStream(output).use { archive ->
+                    putStackFile(archive, original, "original/${original.name}")
+                    putStackText(archive, gson.toJson(portableManifest), FOSSIN_PROJECT_MANIFEST_FILE)
+                    File(directory, "assets").listFiles()?.filter(File::isFile)?.forEach { asset ->
+                        putStackFile(archive, asset, "assets/${asset.name}")
+                    }
+                    File(directory, "masks").listFiles()?.filter(File::isFile)?.forEach { mask ->
+                        putStackFile(archive, mask, "masks/${mask.name}")
+                    }
+                }
+            } ?: return@runCatching false
+            true
+        }.getOrDefault(false)
+    }
+
+    suspend fun delete(context: Context, projectId: String) = writeMutex.withLock {
+        withContext(Dispatchers.IO) {
+            if (runCatching { UUID.fromString(projectId) }.isFailure) return@withContext
+            projectDirectory(context, projectId).deleteRecursively()
+        }
+    }
+
+    private fun root(context: Context) = File(context.filesDir, FOSSIN_STACK_PROJECTS_DIRECTORY)
+    private fun projectDirectory(context: Context, id: String) = File(root(context), id)
+    private fun readManifest(directory: File): JsonObject? = runCatching {
+        JsonParser.parseString(File(directory, FOSSIN_PROJECT_MANIFEST_FILE).readText()).asJsonObject
+    }.getOrNull()
+
+    private fun copyStackUri(context: Context, source: Uri, destination: File) {
+        destination.parentFile?.mkdirs()
+        openUriStream(context, source)?.use { input ->
+            FileOutputStream(destination).use(input::copyTo)
+        } ?: throw FileNotFoundException(source.toString())
+    }
+
+    private fun copyStackAsset(context: Context, directory: File, source: String?, base: String, fallback: String): String? {
+        val uri = source?.let(Uri::parse) ?: return null
+        val name = "$base.${extensionFor(context, uri, fallback)}"
+        val destination = File(directory, name)
+        if (!destination.isFile) copyStackUri(context, uri, destination)
+        return name
+    }
+
+    private fun writeStackMask(destination: File, mask: StackMask) {
+        destination.parentFile?.mkdirs()
+        val pixels = IntArray(mask.width * mask.height) { index ->
+            val alpha = mask.alpha[index].toInt() and 0xff
+            android.graphics.Color.argb(alpha, 255, 255, 255)
+        }
+        Bitmap.createBitmap(pixels, mask.width, mask.height, Bitmap.Config.ARGB_8888).use { bitmap ->
+            FileOutputStream(destination).use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        }
+    }
+
+    private fun readStackMask(file: File, inverted: Boolean, feather: Float): StackMask? = runCatching {
+        val bitmap = BitmapFactory.decodeFile(file.path) ?: return@runCatching null
+        val pixels = IntArray(bitmap.width * bitmap.height)
+        bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+        StackMask(ByteArray(pixels.size) { index -> android.graphics.Color.alpha(pixels[index]).toByte() }, bitmap.width, bitmap.height, inverted, feather)
+    }.getOrNull()
+
+    private fun writeStackText(destination: File, contents: String) {
+        val temporary = File(destination.parentFile, "${destination.name}.tmp")
+        temporary.writeText(contents)
+        if (!temporary.renameTo(destination)) {
+            destination.delete()
+            check(temporary.renameTo(destination))
+        }
+    }
+
+    private fun putStackFile(archive: ZipOutputStream, file: File, path: String) {
+        archive.putNextEntry(ZipEntry(path))
+        FileInputStream(file).use { it.copyTo(archive) }
+        archive.closeEntry()
+    }
+
+    private fun putStackText(archive: ZipOutputStream, contents: String, path: String) {
+        archive.putNextEntry(ZipEntry(path))
+        archive.write(contents.toByteArray(Charsets.UTF_8))
+        archive.closeEntry()
+    }
+
+    private fun JsonObject.string(key: String): String? = get(key)?.takeUnless { it.isJsonNull }?.asString
+    private fun JsonObject.int(key: String): Int = runCatching { get(key).asInt }.getOrDefault(0)
+    private fun JsonObject.long(key: String, fallback: Long): Long = runCatching { get(key).asLong }.getOrDefault(fallback)
+    private fun JsonObject.float(key: String, fallback: Float): Float = runCatching { get(key).asFloat }.getOrDefault(fallback)
+    private fun JsonObject.bool(key: String, fallback: Boolean): Boolean = runCatching { get(key).asBoolean }.getOrDefault(fallback)
+}
+
+private fun Bitmap.use(block: (Bitmap) -> Unit) {
+    try {
+        block(this)
+    } finally {
+        if (!isRecycled) recycle()
+    }
+}
+
+private fun stackParameters(tool: StackTool, state: EditorState): List<StackGestureParameter> {
+    fun parameter(
+        key: String,
+        @StringRes labelRes: Int,
+        value: Float,
+        range: ClosedFloatingPointRange<Float>,
+        update: (EditorState, Float) -> EditorState,
+    ) = StackGestureParameter(key, labelRes, value, range, update)
+    fun effect(effect: SnapEffect, key: String, @StringRes labelRes: Int) = parameter(
+        key, labelRes, state.snapEffects[effect] ?: 0f, 0f..1f,
+    ) { editor, value -> editor.copy(snapEffects = editor.snapEffects + (effect to value)) }
+
+    return when (tool) {
+        StackTool.Looks -> listOf(parameter("look-strength", R.string.fossin_strength, state.intensity, 0f..1f) { editor, value -> editor.copy(intensity = value) })
+        StackTool.Tune -> listOf(
+            parameter("brightness", R.string.fossin_brightness, state.exposure, -2f..2f) { editor, value -> editor.copy(exposure = value) },
+            parameter("contrast", R.string.fossin_contrast, state.contrast, 0.5f..1.5f) { editor, value -> editor.copy(contrast = value) },
+            parameter("saturation", R.string.fossin_saturation, state.saturation, 0f..2f) { editor, value -> editor.copy(saturation = value) },
+            parameter("ambiance", R.string.fossin_ambiance, state.ambiance, -1f..1f) { editor, value -> editor.copy(ambiance = value) },
+            parameter("highlights", R.string.fossin_highlights, state.highlights, -1f..1f) { editor, value -> editor.copy(highlights = value) },
+            parameter("shadows", R.string.fossin_tonal_shadows, state.shadows, -1f..1f) { editor, value -> editor.copy(shadows = value) },
+            parameter("warmth", R.string.fossin_warmth, state.warmth, -1f..1f) { editor, value -> editor.copy(warmth = value) },
+        )
+        StackTool.Details -> listOf(
+            parameter("structure", R.string.fossin_structure, state.detail, -1f..1f) { editor, value -> editor.copy(detail = value) },
+            parameter("sharpen", R.string.fossin_sharpening, state.sharpening, -1f..1f) { editor, value -> editor.copy(sharpening = value.coerceIn(0f, 1f)) },
+        )
+        StackTool.Dehaze -> listOf(parameter("dehaze", R.string.fossin_dehaze, state.tonePivot, -1f..1f) { editor, value -> editor.copy(tonePivot = value, detail = value * 0.35f) })
+        StackTool.TonalContrast -> listOf(
+            parameter("high", R.string.fossin_tonal_highlights, state.tonalContrastHighlights, -1f..1f) { editor, value -> editor.copy(tonalContrastHighlights = value) },
+            parameter("mid", R.string.fossin_tonal_midtones, state.tonalContrastMidtones, -1f..1f) { editor, value -> editor.copy(tonalContrastMidtones = value) },
+            parameter("low", R.string.fossin_tonal_shadows, state.tonalContrastShadows, -1f..1f) { editor, value -> editor.copy(tonalContrastShadows = value) },
+            parameter("protect-high", R.string.fossin_protect_highlights, state.toneShoulder, -1f..1f) { editor, value -> editor.copy(toneShoulder = value) },
+            parameter("protect-low", R.string.fossin_protect_shadows, state.toneToe, -1f..1f) { editor, value -> editor.copy(toneToe = value) },
+        )
+        StackTool.Curves -> listOf(
+            parameter("curve-shadow", R.string.fossin_tonal_shadows, state.toneToe, -1f..1f) { editor, value -> editor.copy(toneToe = value) },
+            parameter("curve-high", R.string.fossin_tonal_highlights, state.toneShoulder, -1f..1f) { editor, value -> editor.copy(toneShoulder = value) },
+        )
+        StackTool.WhiteBalance -> listOf(
+            parameter("temperature", R.string.fossin_temperature, state.warmth, -1f..1f) { editor, value -> editor.copy(warmth = value) },
+            parameter("tint", R.string.fossin_tint, state.tint, -1f..1f) { editor, value -> editor.copy(tint = value) },
+        )
+        StackTool.Color -> listOf(
+            parameter("vibrance", R.string.fossin_vibrance, state.vibrance, -1f..1f) { editor, value -> editor.copy(vibrance = value) },
+            parameter("fade", R.string.fossin_fade, state.fade, 0f..1f) { editor, value -> editor.copy(fade = value) },
+            parameter("saturation", R.string.fossin_saturation, state.saturation, 0f..2f) { editor, value -> editor.copy(saturation = value) },
+        )
+        StackTool.ColorGrading -> listOf(
+            parameter("shadows", R.string.fossin_grading_shadows, state.gradingShadowLuminance, -1f..1f) { editor, value -> editor.copy(gradingShadowLuminance = value) },
+            parameter("midtones", R.string.fossin_grading_midtones, state.gradingMidtoneLuminance, -1f..1f) { editor, value -> editor.copy(gradingMidtoneLuminance = value) },
+            parameter("highlights", R.string.fossin_grading_highlights, state.gradingHighlightLuminance, -1f..1f) { editor, value -> editor.copy(gradingHighlightLuminance = value) },
+            parameter("blend", R.string.fossin_grading_blending, state.gradingBlending, 0f..1f) { editor, value -> editor.copy(gradingBlending = value) },
+        )
+        StackTool.LensBlur -> listOf(
+            parameter("blur", R.string.fossin_blur_strength, state.lensBlurStrength, 0f..1f) { editor, value -> editor.copy(lensBlurStrength = value) },
+            parameter("transition", R.string.fossin_transition, state.lensBlurTransition, 0.02f..1f) { editor, value -> editor.copy(lensBlurTransition = value) },
+            parameter("size", R.string.fossin_radius, state.lensBlurRadius, 0.05f..1f) { editor, value -> editor.copy(lensBlurRadius = value) },
+        )
+        StackTool.Vignette -> listOf(
+            parameter("outer", R.string.fossin_outer_brightness, state.vignette, -1f..1f) { editor, value -> editor.copy(vignette = value) },
+            parameter("inner", R.string.fossin_inner_brightness, state.vignetteInner, -1f..1f) { editor, value -> editor.copy(vignetteInner = value) },
+        )
+        StackTool.Selective -> listOf(
+            parameter("brightness", R.string.fossin_brightness, state.selectiveExposure, -2f..2f) { editor, value -> editor.copy(selectiveExposure = value) },
+            parameter("contrast", R.string.fossin_contrast, state.selectiveContrast, 0f..2f) { editor, value -> editor.copy(selectiveContrast = value) },
+            parameter("saturation", R.string.fossin_saturation, state.selectiveSaturation, 0f..2f) { editor, value -> editor.copy(selectiveSaturation = value) },
+        )
+        StackTool.Brush -> listOf(
+            parameter("brightness", R.string.fossin_brightness, state.brushExposure, -2f..2f) { editor, value -> editor.copy(brushExposure = value) },
+            parameter("saturation", R.string.fossin_saturation, state.brushSaturation, 0f..2f) { editor, value -> editor.copy(brushSaturation = value) },
+            parameter("warmth", R.string.fossin_warmth, state.brushWarmth, -1f..1f) { editor, value -> editor.copy(brushWarmth = value) },
+        )
+        StackTool.Healing -> listOf(parameter("strength", R.string.fossin_strength, state.healingStrength, 0f..1f) { editor, value -> editor.copy(healingStrength = value) })
+        StackTool.Perspective -> listOf(
+            parameter("horizontal", R.string.fossin_horizontal, state.perspectiveHorizontal, -1f..1f) { editor, value -> editor.copy(perspectiveHorizontal = value) },
+            parameter("vertical", R.string.fossin_vertical, state.perspectiveVertical, -1f..1f) { editor, value -> editor.copy(perspectiveVertical = value) },
+            parameter("rotate", R.string.fossin_rotate, state.perspectiveRotate, -1f..1f) { editor, value -> editor.copy(perspectiveRotate = value) },
+        )
+        StackTool.Crop -> listOf(
+            parameter("straighten", R.string.fossin_straighten, state.rotationFine, -1f..1f) { editor, value -> editor.copy(rotationFine = value) },
+        )
+        StackTool.Expand -> listOf(parameter("size", R.string.fossin_expand_amount, state.expandAmount, 0f..1f) { editor, value -> editor.copy(expandAmount = value) })
+        StackTool.HeadPose -> listOf(
+            parameter("horizontal", R.string.fossin_horizontal, state.headPoseHorizontal, -1f..1f) { editor, value -> editor.copy(headPoseHorizontal = value) },
+            parameter("vertical", R.string.fossin_vertical, state.headPoseVertical, -1f..1f) { editor, value -> editor.copy(headPoseVertical = value) },
+            parameter("tilt", R.string.fossin_tilt, state.headPoseTilt, -1f..1f) { editor, value -> editor.copy(headPoseTilt = value) },
+        )
+        StackTool.Grain -> listOf(parameter("grain", R.string.recipe_param_film_grain, state.grain, 0f..1f) { editor, value -> editor.copy(grain = value) })
+        StackTool.Bloom -> listOf(parameter("bloom", R.string.recipe_param_bloom, state.bloom, 0f..1f) { editor, value -> editor.copy(bloom = value) })
+        StackTool.Hdr -> listOf(effect(SnapEffect.HdrScape, "hdr", R.string.fossin_hdr_intensity))
+        StackTool.ChromaticAberration -> listOf(parameter("aberration", R.string.fossin_chromatic_aberration, state.chromaticAberration, 0f..1f) { editor, value -> editor.copy(chromaticAberration = value) })
+        StackTool.Halation -> listOf(parameter("halation", R.string.fossin_halation, state.halation, 0f..1f) { editor, value -> editor.copy(halation = value) })
+        StackTool.Vintage -> listOf(effect(SnapEffect.Vintage, "vintage", R.string.fossin_strength))
+        StackTool.BlackWhite -> listOf(effect(SnapEffect.BlackWhite, "bw", R.string.fossin_strength))
+        StackTool.Drama -> listOf(effect(SnapEffect.Drama, "drama", R.string.fossin_strength))
+        StackTool.Noir -> listOf(effect(SnapEffect.Noir, "noir", R.string.fossin_strength))
+        StackTool.Grunge -> listOf(effect(SnapEffect.Grunge, "grunge", R.string.fossin_strength))
+        StackTool.DoubleExposure -> listOf(parameter("opacity", R.string.fossin_opacity, state.overlayAlpha, 0f..1f) { editor, value -> editor.copy(overlayAlpha = value) })
+        StackTool.Frame -> listOf(parameter("width", R.string.fossin_frame_width, state.frameWidth, 0f..1f) { editor, value -> editor.copy(frameWidth = value) })
+        StackTool.Text -> listOf(
+            parameter("size", R.string.fossin_text_size, state.textSize, 0.03f..0.2f) { editor, value -> editor.copy(textSize = value) },
+            parameter("opacity", R.string.fossin_opacity, state.textOpacity, 0f..1f) { editor, value -> editor.copy(textOpacity = value) },
+        )
+    }
+}
+
+private suspend fun renderStackBitmap(
+    context: Context,
+    processor: LutImageProcessor,
+    source: Bitmap,
+    operations: List<StackOperation>,
+): Bitmap = withContext(Dispatchers.Default) {
+    var current = source
+    operations.filter(StackOperation::enabled).forEach { operation ->
+        val overlay = operation.state.overlayUri?.let { value ->
+            runCatching { loadBitmap(context, Uri.parse(value), 2048) }.getOrNull()
+        }
+        val effected = renderEditorBitmap(processor, current, operation.state, overlay)
+        overlay?.takeIf { it !== effected && !it.isRecycled }?.recycle()
+        val next = operation.mask?.takeUnless { operation.tool.isGlobalGeometry }?.let { mask ->
+            blendStackMask(current, effected, mask)
+        } ?: effected
+        if (current !== source && current !== next && !current.isRecycled) current.recycle()
+        if (effected !== next && effected !== source && !effected.isRecycled) effected.recycle()
+        current = next
+    }
+    current
+}
+
+private fun blendStackMask(input: Bitmap, effect: Bitmap, mask: StackMask): Bitmap {
+    if (input.width != effect.width || input.height != effect.height) return effect
+    val inPixels = IntArray(input.width * input.height)
+    val effectPixels = IntArray(effect.width * effect.height)
+    input.getPixels(inPixels, 0, input.width, 0, 0, input.width, input.height)
+    effect.getPixels(effectPixels, 0, effect.width, 0, 0, effect.width, effect.height)
+    val output = IntArray(inPixels.size)
+    val featherRadius = (mask.feather.coerceIn(0f, 0.4f) * minOf(mask.width, mask.height)).roundToInt()
+    inPixels.indices.forEach { index ->
+        val x = index % input.width
+        val y = index / input.width
+        var alpha = sampleStackMask(mask, x.toFloat() / input.width, y.toFloat() / input.height)
+        if (featherRadius > 0) alpha = smoothStackMask(mask, x.toFloat() / input.width, y.toFloat() / input.height, featherRadius)
+        if (mask.inverted) alpha = 1f - alpha
+        output[index] = blendStackPixel(inPixels[index], effectPixels[index], alpha)
+    }
+    return Bitmap.createBitmap(output, input.width, input.height, Bitmap.Config.ARGB_8888)
+}
+
+private fun blendStackPixel(base: Int, effect: Int, alpha: Float): Int {
+    val amount = alpha.coerceIn(0f, 1f)
+    fun component(from: Int, to: Int) = (from + (to - from) * amount).roundToInt().coerceIn(0, 255)
+    return android.graphics.Color.argb(
+        component(android.graphics.Color.alpha(base), android.graphics.Color.alpha(effect)),
+        component(android.graphics.Color.red(base), android.graphics.Color.red(effect)),
+        component(android.graphics.Color.green(base), android.graphics.Color.green(effect)),
+        component(android.graphics.Color.blue(base), android.graphics.Color.blue(effect)),
+    )
+}
+
+private fun sampleStackMask(mask: StackMask, nx: Float, ny: Float): Float {
+    val x = (nx.coerceIn(0f, 1f) * (mask.width - 1)).roundToInt()
+    val y = (ny.coerceIn(0f, 1f) * (mask.height - 1)).roundToInt()
+    return (mask.alpha[y * mask.width + x].toInt() and 0xff) / 255f
+}
+
+private fun smoothStackMask(mask: StackMask, nx: Float, ny: Float, radius: Int): Float {
+    val centerX = (nx.coerceIn(0f, 1f) * (mask.width - 1)).roundToInt()
+    val centerY = (ny.coerceIn(0f, 1f) * (mask.height - 1)).roundToInt()
+    val step = maxOf(1, radius / 3)
+    var total = 0f
+    var count = 0
+    for (y in (centerY - radius)..(centerY + radius) step step) for (x in (centerX - radius)..(centerX + radius) step step) {
+        if (x !in 0 until mask.width || y !in 0 until mask.height) continue
+        total += (mask.alpha[y * mask.width + x].toInt() and 0xff) / 255f
+        count++
+    }
+    return if (count == 0) 0f else total / count
+}
+
+/** Seeded local segmentation for the explicit manual fallback and for refining model output. */
+private fun seededStackMask(bitmap: Bitmap, point: NormalizedPoint): StackMask {
+    val scale = minOf(1f, STACK_MASK_EDGE.toFloat() / maxOf(bitmap.width, bitmap.height))
+    val width = (bitmap.width * scale).roundToInt().coerceAtLeast(1)
+    val height = (bitmap.height * scale).roundToInt().coerceAtLeast(1)
+    val small = if (width == bitmap.width && height == bitmap.height) bitmap else Bitmap.createScaledBitmap(bitmap, width, height, true)
+    val pixels = IntArray(width * height)
+    small.getPixels(pixels, 0, width, 0, 0, width, height)
+    if (small !== bitmap) small.recycle()
+    val startX = (point.x.coerceIn(0f, 1f) * (width - 1)).roundToInt()
+    val startY = (point.y.coerceIn(0f, 1f) * (height - 1)).roundToInt()
+    val seed = pixels[startY * width + startX]
+    val seedR = android.graphics.Color.red(seed)
+    val seedG = android.graphics.Color.green(seed)
+    val seedB = android.graphics.Color.blue(seed)
+    val alpha = ByteArray(width * height)
+    val visited = BooleanArray(alpha.size)
+    val queue = IntArray(alpha.size)
+    var head = 0
+    var tail = 0
+    queue[tail++] = startY * width + startX
+    visited[startY * width + startX] = true
+    val tolerance = 82
+    while (head < tail) {
+        val index = queue[head++]
+        val color = pixels[index]
+        val distance = kotlin.math.abs(android.graphics.Color.red(color) - seedR) +
+            kotlin.math.abs(android.graphics.Color.green(color) - seedG) +
+            kotlin.math.abs(android.graphics.Color.blue(color) - seedB)
+        if (distance > tolerance) continue
+        alpha[index] = 0xff.toByte()
+        val x = index % width
+        val y = index / width
+        intArrayOf(index - 1, index + 1, index - width, index + width).forEach { neighbor ->
+            if (neighbor !in pixels.indices || visited[neighbor]) return@forEach
+            val nx = neighbor % width
+            val ny = neighbor / width
+            if (kotlin.math.abs(nx - x) + kotlin.math.abs(ny - y) != 1) return@forEach
+            visited[neighbor] = true
+            queue[tail++] = neighbor
+        }
+    }
+    return StackMask(alpha, width, height)
+}
+
+@Composable
+private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: () -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var showingHall by rememberSaveable { mutableStateOf(initialUri == null) }
+    var sourceUri by rememberSaveable { mutableStateOf<Uri?>(initialUri) }
+    var source by remember { mutableStateOf<Bitmap?>(null) }
+    var rendered by remember { mutableStateOf<Bitmap?>(null) }
+    var projectId by rememberSaveable { mutableStateOf<String?>(null) }
+    var operations by remember { mutableStateOf<List<StackOperation>>(emptyList()) }
+    var undoStack by remember { mutableStateOf<List<List<StackOperation>>>(emptyList()) }
+    var redoStack by remember { mutableStateOf<List<List<StackOperation>>>(emptyList()) }
+    var activeTool by remember { mutableStateOf<StackTool?>(null) }
+    var draft by remember { mutableStateOf<StackOperation?>(null) }
+    var editingOperationId by remember { mutableStateOf<String?>(null) }
+    var activeParameterKey by remember { mutableStateOf<String?>(null) }
+    var showParameters by remember { mutableStateOf(false) }
+    var showOriginal by remember { mutableStateOf(false) }
+    var showLayers by remember { mutableStateOf(false) }
+    var showMask by remember { mutableStateOf(false) }
+    var maskAddMode by remember { mutableStateOf(true) }
+    var maskOverlayVisible by remember { mutableStateOf(true) }
+    var pickingNeutralPoint by remember { mutableStateOf(false) }
+    var mainTab by remember { mutableStateOf(StackEditorTab.Styles) }
+    var showExitDialog by remember { mutableStateOf(false) }
+    var showExportDialog by remember { mutableStateOf(false) }
+    var exportMode by remember { mutableStateOf(StackExportMode.KeepProject) }
+    var isRendering by remember { mutableStateOf(false) }
+    var isExporting by remember { mutableStateOf(false) }
+    var builtIns by remember { mutableStateOf<List<LutChoice>>(emptyList()) }
+    val processor = remember { LutImageProcessor(context.applicationContext) }
+    val renderMutex = remember { Mutex() }
+
+    fun mutateStack(next: List<StackOperation>) {
+        if (next == operations) return
+        undoStack = (undoStack + listOf(operations)).takeLast(48)
+        operations = next
+        redoStack = emptyList()
+    }
+    fun undo() {
+        val prior = undoStack.lastOrNull() ?: return
+        redoStack = redoStack + listOf(operations)
+        operations = prior
+        undoStack = undoStack.dropLast(1)
+    }
+    fun redo() {
+        val next = redoStack.lastOrNull() ?: return
+        undoStack = undoStack + listOf(operations)
+        operations = next
+        redoStack = redoStack.dropLast(1)
+    }
+    fun beginTool(tool: StackTool, existing: StackOperation? = null, initialState: EditorState = EditorState()) {
+        activeTool = tool
+        draft = existing ?: StackOperation(tool = tool, state = initialState)
+        editingOperationId = existing?.id
+        activeParameterKey = stackParameters(tool, existing?.state ?: EditorState()).firstOrNull()?.key
+        showParameters = false
+        mainTab = StackEditorTab.Tools
+    }
+    fun updateDraft(transform: (EditorState) -> EditorState) {
+        draft = draft?.let { it.copy(state = transform(it.state)) }
+    }
+    fun commitDraft() {
+        val candidate = draft ?: return
+        val currentId = editingOperationId
+        mutateStack(
+            if (currentId == null) operations + candidate
+            else operations.map { if (it.id == currentId) candidate else it },
+        )
+        activeTool = null
+        draft = null
+        editingOperationId = null
+        showMask = false
+    }
+    fun discardDraft() {
+        activeTool = null
+        draft = null
+        editingOperationId = null
+        showMask = false
+    }
+    fun leaveEditor() {
+        if (draft != null) {
+            showExitDialog = true
+            return
+        }
+        if (initialUri != null) onFinish() else {
+            source = null
+            rendered = null
+            sourceUri = null
+            projectId = null
+            operations = emptyList()
+            undoStack = emptyList()
+            redoStack = emptyList()
+            showingHall = true
+        }
+    }
+
+    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let {
+            persistReadPermission(context, it)
+            sourceUri = it
+            projectId = StackProjectStore.newId()
+            operations = emptyList()
+            undoStack = emptyList()
+            redoStack = emptyList()
+            source = null
+            showingHall = false
+        }
+    }
+    val lutPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let { selected ->
+            persistReadPermission(context, selected)
+            scope.launch {
+                runCatching {
+                    withContext(Dispatchers.IO) {
+                        openUriStream(context, selected)?.use { LutParser.parse(it, lutDisplayName(context, selected)) }
+                            ?: throw FileNotFoundException()
+                    }
+                }.onSuccess { config ->
+                    updateDraft { state ->
+                        val name = lutDisplayName(context, selected)
+                        state.copy(lut = LutChoice(name, config), lutName = name, lutUri = selected.toString())
+                    }
+                }.onFailure {
+                    Toast.makeText(context, R.string.fossin_lut_import_failed, Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+    val overlayPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let { selected ->
+            persistReadPermission(context, selected)
+            updateDraft { state ->
+                state.copy(overlayUri = selected.toString(), overlayAlpha = maxOf(0.45f, state.overlayAlpha))
+            }
+        }
+    }
+    val exportPicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("image/jpeg")) { target ->
+        target?.let { uri ->
+            val exportedSource = source ?: return@let
+            val exportedOperations = operations
+            val exportProjectId = projectId
+            val exportSourceUri = sourceUri
+            val mode = exportMode
+            scope.launch {
+                isExporting = true
+                if (exportProjectId != null && exportSourceUri != null) {
+                    StackProjectStore.save(context, exportProjectId, exportSourceUri, exportedOperations)
+                }
+                val fullSource = exportSourceUri?.let { runCatching { loadBitmap(context, it, maxEdge = 4096) }.getOrNull() } ?: exportedSource
+                val output = runCatching {
+                    renderMutex.withLock { renderStackBitmap(context, processor, fullSource, exportedOperations) }
+                }.getOrNull()
+                val saved = output != null && withContext(Dispatchers.IO) {
+                    context.contentResolver.openOutputStream(uri)?.use { output.compress(Bitmap.CompressFormat.JPEG, 96, it) } == true
+                }
+                if (output != null && output !== exportedSource && output !== fullSource && !output.isRecycled) output.recycle()
+                if (fullSource !== exportedSource && !fullSource.isRecycled) fullSource.recycle()
+                isExporting = false
+                Toast.makeText(context, if (saved) R.string.fossin_export_done else R.string.fossin_export_failed, Toast.LENGTH_LONG).show()
+                if (saved && mode == StackExportMode.PhotoOnly && exportProjectId != null) {
+                    StackProjectStore.delete(context, exportProjectId)
+                    source = null
+                    rendered = null
+                    sourceUri = null
+                    projectId = null
+                    operations = emptyList()
+                    undoStack = emptyList()
+                    redoStack = emptyList()
+                    showingHall = true
+                }
+            }
+        }
+    }
+    val archivePicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { target ->
+        target?.let { uri ->
+            val id = projectId ?: return@let
+            val uriToSave = sourceUri ?: return@let
+            val operationsToSave = operations
+            scope.launch {
+                isExporting = true
+                val saved = StackProjectStore.save(context, id, uriToSave, operationsToSave)
+                val archived = saved && StackProjectStore.exportArchive(context, id, uri)
+                isExporting = false
+                Toast.makeText(context, if (archived) R.string.fossin_export_package_done else R.string.fossin_export_package_failed, Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+    fun shareEditedImage() {
+        val previewSource = source ?: return
+        val sharedOperations = operations
+        val uriToShare = sourceUri
+        scope.launch {
+            isExporting = true
+            var fullSource: Bitmap? = null
+            var output: Bitmap? = null
+            try {
+                fullSource = uriToShare?.let { loadBitmap(context, it, maxEdge = 4096) } ?: previewSource
+                output = renderMutex.withLock { renderStackBitmap(context, processor, fullSource!!, sharedOperations) }
+                val shareDirectory = File(context.cacheDir, "shared").apply { mkdirs() }
+                val shareFile = File(shareDirectory, "photo-editor-${System.currentTimeMillis()}.jpg")
+                withContext(Dispatchers.IO) {
+                    FileOutputStream(shareFile).use { stream ->
+                        check(output!!.compress(Bitmap.CompressFormat.JPEG, 96, stream))
+                    }
+                }
+                val shareUri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", shareFile)
+                context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+                    type = "image/jpeg"
+                    putExtra(Intent.EXTRA_STREAM, shareUri)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }, null))
+            } catch (_: Throwable) {
+                Toast.makeText(context, R.string.fossin_share_failed, Toast.LENGTH_LONG).show()
+            } finally {
+                output?.takeIf { it !== previewSource && it !== fullSource && !it.isRecycled }?.recycle()
+                fullSource?.takeIf { it !== previewSource && !it.isRecycled }?.recycle()
+                isExporting = false
+            }
+        }
+    }
+
+    DisposableEffect(processor) { onDispose { processor.release() } }
+    LaunchedEffect(Unit) {
+        builtIns = withContext(Dispatchers.IO) {
+            LutParser.listAvailableLuts(context).mapNotNull { info ->
+                runCatching { LutChoice(info.getName(), LutParser.parseFromAssets(context, info.fileName)) }.getOrNull()
+            }
+        }
+    }
+    LaunchedEffect(sourceUri) {
+        val uri = sourceUri ?: return@LaunchedEffect
+        if (source != null) return@LaunchedEffect
+        val bitmap = loadBitmap(context, uri, maxEdge = 1440)
+        if (bitmap != null) {
+            source = bitmap
+            if (projectId == null) projectId = StackProjectStore.newId()
+        }
+    }
+    LaunchedEffect(builtIns, operations) {
+        if (builtIns.isEmpty()) return@LaunchedEffect
+        val restored = operations.map { operation ->
+            val name = operation.state.lutName
+            if (operation.state.lut == null && operation.state.lutUri == null && name != null) {
+                builtIns.firstOrNull { it.name == name }?.let { operation.copy(state = operation.state.copy(lut = it)) } ?: operation
+            } else operation
+        }
+        if (restored != operations) operations = restored
+    }
+    LaunchedEffect(operations) {
+        val unresolved = operations.filter { operation ->
+            operation.state.lut == null && operation.state.lutUri != null
+        }
+        if (unresolved.isEmpty()) return@LaunchedEffect
+        val resolved = unresolved.associate { operation ->
+            operation.id to runCatching {
+                val uri = Uri.parse(operation.state.lutUri)
+                val name = operation.state.lutName ?: lutDisplayName(context, uri)
+                val config = withContext(Dispatchers.IO) {
+                    openUriStream(context, uri)?.use { LutParser.parse(it, name) } ?: throw FileNotFoundException(uri.toString())
+                }
+                LutChoice(name, config)
+            }.getOrNull()
+        }
+        if (resolved.values.any { it != null }) {
+            operations = operations.map { operation ->
+                resolved[operation.id]?.let { choice ->
+                    operation.copy(state = operation.state.copy(lut = choice, lutName = choice.name))
+                } ?: operation
+            }
+        }
+    }
+    LaunchedEffect(projectId, sourceUri, source, operations) {
+        val id = projectId ?: return@LaunchedEffect
+        val uri = sourceUri ?: return@LaunchedEffect
+        if (source == null) return@LaunchedEffect
+        delay(350)
+        StackProjectStore.save(context, id, uri, operations)
+    }
+
+    val visibleOperations = draft?.let { pending ->
+        editingOperationId?.let { id -> operations.map { if (it.id == id) pending else it } } ?: operations + pending
+    } ?: operations
+    LaunchedEffect(source, visibleOperations) {
+        val input = source ?: return@LaunchedEffect
+        isRendering = true
+        try {
+            val next = renderMutex.withLock { renderStackBitmap(context, processor, input, visibleOperations) }
+            val old = rendered
+            rendered = next
+            if (old != null && old !== input && old !== next && !old.isRecycled) old.recycle()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Throwable) {
+            rendered = input
+        } finally {
+            isRendering = false
+        }
+    }
+
+    if (showingHall) {
+        BackHandler { onFinish() }
+        StackEditorHall(
+            onImport = { imagePicker.launch(arrayOf("image/*")) },
+            onOpenCamera = onOpenCamera,
+            onOpenProject = { summary ->
+                scope.launch {
+                    val project = StackProjectStore.load(context, summary.id) ?: return@launch
+                    source = null
+                    rendered = null
+                    sourceUri = project.uri
+                    projectId = project.id
+                    operations = project.operations
+                    undoStack = emptyList()
+                    redoStack = emptyList()
+                    showingHall = false
+                }
+            },
+        )
+        return
+    }
+
+    BackHandler { leaveEditor() }
+    val image = if (showOriginal) source else rendered ?: source
+    val active = activeTool
+    val parameters = draft?.let { operation -> stackParameters(operation.tool, operation.state) }.orEmpty()
+    val activeParameter = parameters.firstOrNull { it.key == activeParameterKey } ?: parameters.firstOrNull()
+    val latestImage by rememberUpdatedState(image)
+    val latestSource by rememberUpdatedState(source)
+    val latestDraft by rememberUpdatedState(draft)
+    val latestParameters by rememberUpdatedState(parameters)
+    val latestMaskAddMode by rememberUpdatedState(maskAddMode)
+    val latestUpdateDraft by rememberUpdatedState(newValue = { transform: (EditorState) -> EditorState -> updateDraft(transform) })
+
+    Surface(Modifier.fillMaxSize(), color = Color(0xFF070708)) {
+        Box(Modifier.fillMaxSize()) {
+            Column(Modifier.fillMaxSize()) {
+                StackTopBar(
+                    canUndo = undoStack.isNotEmpty(),
+                    canRedo = redoStack.isNotEmpty(),
+                    onBack = ::leaveEditor,
+                    onUndo = ::undo,
+                    onRedo = ::redo,
+                    onHoldOriginal = { showOriginal = it },
+                    onLayers = { showLayers = true },
+                )
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (image == null) {
+                        EmptyEditor({ imagePicker.launch(arrayOf("image/*")) }, onOpenCamera)
+                    } else {
+                        val imageModifier = Modifier
+                            .fillMaxSize()
+                            .pointerInput(active, pickingNeutralPoint) {
+                                if (active != StackTool.WhiteBalance || !pickingNeutralPoint) return@pointerInput
+                                detectTapGestures(onTap = { offset ->
+                                    val bitmap = latestSource ?: return@detectTapGestures
+                                    val rect = displayedImageRect(size.width.toFloat(), size.height.toFloat(), latestImage ?: bitmap)
+                                    val x = (((offset.x - rect.left) / rect.width) * (bitmap.width - 1)).roundToInt().coerceIn(0, bitmap.width - 1)
+                                    val y = (((offset.y - rect.top) / rect.height) * (bitmap.height - 1)).roundToInt().coerceIn(0, bitmap.height - 1)
+                                    val color = bitmap.getPixel(x, y)
+                                    val red = android.graphics.Color.red(color) / 255f
+                                    val green = android.graphics.Color.green(color) / 255f
+                                    val blue = android.graphics.Color.blue(color) / 255f
+                                    latestUpdateDraft { state ->
+                                        state.copy(
+                                            warmth = (state.warmth + (blue - red) * 0.8f).coerceIn(-1f, 1f),
+                                            tint = (state.tint + ((red + blue) * 0.5f - green) * 0.9f).coerceIn(-1f, 1f),
+                                        )
+                                    }
+                                    pickingNeutralPoint = false
+                                })
+                            }
+                            .pointerInput(active, showMask) {
+                                if (active != StackTool.LensBlur || showMask) return@pointerInput
+                                awaitEachGesture {
+                                    awaitFirstDown(requireUnconsumed = false)
+                                    var previousCentroid: Offset? = null
+                                    var previousDistance = 0f
+                                    var previousAngle = 0f
+                                    var pointersPressed = true
+                                    while (pointersPressed) {
+                                        val event = awaitPointerEvent()
+                                        val fingers = event.changes.filter { it.pressed }
+                                        if (fingers.size >= 2) {
+                                            val first = fingers[0].position
+                                            val second = fingers[1].position
+                                            val centroid = Offset((first.x + second.x) * 0.5f, (first.y + second.y) * 0.5f)
+                                            val distance = (first - second).getDistance().coerceAtLeast(1f)
+                                            val angle = kotlin.math.atan2(second.y - first.y, second.x - first.x)
+                                            val bitmap = latestImage
+                                            val previous = previousCentroid
+                                            if (bitmap != null && previous != null) {
+                                                val rect = displayedImageRect(size.width.toFloat(), size.height.toFloat(), bitmap)
+                                                val scale = distance / previousDistance.coerceAtLeast(1f)
+                                                val rotation = (angle - previousAngle) / Math.PI.toFloat()
+                                                latestUpdateDraft { state ->
+                                                    state.copy(
+                                                        lensBlurX = (state.lensBlurX + (centroid.x - previous.x) / rect.width).coerceIn(0f, 1f),
+                                                        lensBlurY = (state.lensBlurY + (centroid.y - previous.y) / rect.height).coerceIn(0f, 1f),
+                                                        lensBlurRadius = (state.lensBlurRadius * scale).coerceIn(0.05f, 1f),
+                                                        lensBlurAngle = (state.lensBlurAngle + rotation).coerceIn(-1f, 1f),
+                                                    )
+                                                }
+                                            }
+                                            previousCentroid = centroid
+                                            previousDistance = distance
+                                            previousAngle = angle
+                                            fingers.forEach { it.consume() }
+                                        }
+                                        pointersPressed = event.changes.any { it.pressed }
+                                    }
+                                }
+                            }
+                            .pointerInput(active, showMask) {
+                                var phase = SnapseedGesturePhase.Pending
+                                var totalHorizontal = 0f
+                                var totalVertical = 0f
+                                var horizontalSinceSelection = 0f
+                                var adjustmentHorizontal = 0f
+                                var horizontalStartValue = 0f
+                                var horizontalParameter: StackGestureParameter? = null
+                                var verticalStartIndex = 0
+                                var mask: StackMask? = null
+                                var lastMaskPoint: Offset? = null
+                                var cropStart: NormalizedPoint? = null
+                                var draggingGuide = false
+
+                                fun normalized(offset: Offset, bitmap: Bitmap): NormalizedPoint {
+                                    val rect = displayedImageRect(size.width.toFloat(), size.height.toFloat(), bitmap)
+                                    return NormalizedPoint(
+                                        ((offset.x - rect.left) / rect.width).coerceIn(0f, 1f),
+                                        ((offset.y - rect.top) / rect.height).coerceIn(0f, 1f),
+                                    )
+                                }
+
+                                fun addMaskSeed(offset: Offset) {
+                                    val sourceBitmap = latestSource ?: return
+                                    val pending = latestDraft ?: return
+                                    val point = normalized(offset, latestImage ?: sourceBitmap)
+                                    val currentMask = mask ?: pending.mask
+                                    mask = if (currentMask == null) {
+                                        seededStackMask(sourceBitmap, point)
+                                    } else {
+                                        paintStackMask(currentMask, point, latestMaskAddMode)
+                                    }
+                                    draft = pending.copy(mask = mask)
+                                }
+
+                                detectDragGestures(
+                                    onDragStart = { offset ->
+                                        phase = SnapseedGesturePhase.Pending
+                                        totalHorizontal = 0f
+                                        totalVertical = 0f
+                                        horizontalSinceSelection = 0f
+                                        adjustmentHorizontal = 0f
+                                        horizontalParameter = null
+                                        lastMaskPoint = null
+                                        cropStart = null
+                                        draggingGuide = false
+                                        val pending = latestDraft
+                                        val bitmap = latestImage
+                                        if (showMask && pending != null && latestSource != null && bitmap != null) {
+                                            mask = pending.mask
+                                            addMaskSeed(offset)
+                                            lastMaskPoint = offset
+                                            return@detectDragGestures
+                                        }
+                                        if (active == StackTool.Crop && pending != null && bitmap != null) {
+                                            cropStart = normalized(offset, bitmap)
+                                            return@detectDragGestures
+                                        }
+                                        if ((active == StackTool.LensBlur || active == StackTool.Vignette) && pending != null && bitmap != null) {
+                                            val rect = displayedImageRect(size.width.toFloat(), size.height.toFloat(), bitmap)
+                                            val center = if (active == StackTool.LensBlur) {
+                                                Offset(rect.left + pending.state.lensBlurX * rect.width, rect.top + pending.state.lensBlurY * rect.height)
+                                            } else {
+                                                Offset(rect.left + pending.state.vignetteX * rect.width, rect.top + pending.state.vignetteY * rect.height)
+                                            }
+                                            draggingGuide = (offset - center).getDistance() < 44.dp.toPx()
+                                        }
+                                    },
+                                    onDrag = { change, dragAmount ->
+                                        val bitmap = latestImage
+                                        if (showMask && bitmap != null && latestSource != null) {
+                                            val previous = lastMaskPoint
+                                            if (previous == null || (change.position - previous).getDistance() >= 18.dp.toPx()) {
+                                                addMaskSeed(change.position)
+                                                lastMaskPoint = change.position
+                                            }
+                                            change.consume()
+                                            return@detectDragGestures
+                                        }
+                                        if (active == StackTool.Crop && bitmap != null) {
+                                            cropStart?.let { start ->
+                                                val point = normalized(change.position, bitmap)
+                                                latestUpdateDraft { state ->
+                                                    state.copy(
+                                                        cropMode = CropMode.Free,
+                                                        cropLeft = minOf(start.x, point.x),
+                                                        cropTop = minOf(start.y, point.y),
+                                                        cropRight = maxOf(start.x, point.x),
+                                                        cropBottom = maxOf(start.y, point.y),
+                                                    )
+                                                }
+                                            }
+                                            change.consume()
+                                            return@detectDragGestures
+                                        }
+                                        if (draggingGuide && bitmap != null) {
+                                            val point = normalized(change.position, bitmap)
+                                            latestUpdateDraft { state ->
+                                                if (active == StackTool.LensBlur) state.copy(lensBlurX = point.x, lensBlurY = point.y)
+                                                else state.copy(vignetteX = point.x, vignetteY = point.y)
+                                            }
+                                            change.consume()
+                                            return@detectDragGestures
+                                        }
+                                        val current = latestParameters
+                                        if (active == null || current.isEmpty()) return@detectDragGestures
+                                        totalHorizontal += dragAmount.x
+                                        totalVertical += dragAmount.y
+                                        if (phase == SnapseedGesturePhase.Pending) {
+                                            phase = snapseedInitialGesturePhase(
+                                                totalHorizontal,
+                                                totalVertical,
+                                                GESTURE_TOUCH_SLOP_DP.dp.toPx(),
+                                            )
+                                            if (phase == SnapseedGesturePhase.Selecting) {
+                                                verticalStartIndex = current.indexOfFirst { it.key == activeParameterKey }.takeIf { it >= 0 } ?: 0
+                                                activeParameterKey = current[verticalStartIndex].key
+                                                showParameters = true
+                                            } else if (phase == SnapseedGesturePhase.Adjusting) {
+                                                horizontalParameter = current.firstOrNull { it.key == activeParameterKey } ?: current.first()
+                                                horizontalStartValue = horizontalParameter?.value ?: 0f
+                                                adjustmentHorizontal = totalHorizontal - dragAmount.x
+                                            }
+                                        }
+                                        if (phase == SnapseedGesturePhase.Selecting) {
+                                            val index = snapseedParameterIndexForDrag(
+                                                verticalStartIndex,
+                                                current.size,
+                                                totalVertical,
+                                                GESTURE_PARAMETER_STEP_DP.dp.toPx(),
+                                            )
+                                            activeParameterKey = current[index].key
+                                            horizontalSinceSelection += dragAmount.x
+                                            if (snapseedShouldBeginHorizontalAdjustment(
+                                                    horizontalSinceSelection,
+                                                    dragAmount.x,
+                                                    dragAmount.y,
+                                                    GESTURE_DIRECTION_TURN_SLOP_DP.dp.toPx(),
+                                                )
+                                            ) {
+                                                horizontalParameter = current.firstOrNull { it.key == activeParameterKey } ?: current.first()
+                                                horizontalStartValue = horizontalParameter?.value ?: 0f
+                                                adjustmentHorizontal = 0f
+                                                phase = SnapseedGesturePhase.Adjusting
+                                            }
+                                        }
+                                        if (phase == SnapseedGesturePhase.Adjusting) {
+                                            adjustmentHorizontal += dragAmount.x
+                                            horizontalParameter?.let { parameter ->
+                                                val value = snapseedAdjustedValue(
+                                                    horizontalStartValue,
+                                                    parameter.range,
+                                                    adjustmentHorizontal,
+                                                    GESTURE_FULL_RANGE_DP.dp.toPx(),
+                                                )
+                                                latestUpdateDraft { state -> parameter.update(state, value) }
+                                            }
+                                        }
+                                        change.consume()
+                                    },
+                                    onDragEnd = {
+                                        showParameters = false
+                                        cropStart = null
+                                        draggingGuide = false
+                                    },
+                                    onDragCancel = {
+                                        showParameters = false
+                                        cropStart = null
+                                        draggingGuide = false
+                                    },
+                                )
+                            }
+                        Image(image.asImageBitmap(), stringResource(R.string.fossin_preview), imageModifier, contentScale = ContentScale.Fit)
+                        if (showMask && draft?.mask != null && maskOverlayVisible) {
+                            StackMaskOverlay(draft!!.mask!!, image)
+                        }
+                        if (showParameters && active != null) {
+                            StackParameterMenu(parameters, activeParameterKey) { activeParameterKey = it.key }
+                        }
+                        if (active == StackTool.LensBlur && draft != null) {
+                            StackLensGuide(draft!!.state, image)
+                        }
+                        if (active == StackTool.Vignette && draft != null) {
+                            StackVignetteGuide(draft!!.state, image)
+                        }
+                        if (active == StackTool.Crop && draft != null) {
+                            StackCropGuide(draft!!.state, image)
+                        }
+                    }
+                    if (isRendering || isExporting) LinearProgressIndicator(Modifier.align(Alignment.BottomCenter).fillMaxWidth(0.6f))
+                }
+                if (active != null && draft != null) {
+                    StackEditControls(
+                        tool = active,
+                        parameter = activeParameter,
+                        state = draft!!.state,
+                        onCancel = ::discardDraft,
+                        onConfirm = ::commitDraft,
+                        onAuto = {
+                            source?.let { bitmap -> updateDraft { stackAutoTune(bitmap, it) } }
+                        },
+                        onMask = { showMask = !showMask },
+                        onLayers = { showLayers = true },
+                    )
+                    if (showMask) {
+                        StackMaskControls(
+                            advanced = draft!!.mask != null,
+                            addMode = maskAddMode,
+                            overlayVisible = maskOverlayVisible,
+                            feather = draft!!.mask?.feather ?: 0.08f,
+                            onAdd = { maskAddMode = true },
+                            onSubtract = { maskAddMode = false },
+                            onInvert = { draft = draft?.let { it.copy(mask = it.mask?.copy(inverted = !it.mask.inverted)) } },
+                            onOverlay = { maskOverlayVisible = !maskOverlayVisible },
+                            onFeather = { value -> draft = draft?.let { it.copy(mask = it.mask?.copy(feather = value)) } },
+                        )
+                    } else {
+                        StackToolContext(
+                            tool = active,
+                            operation = draft!!,
+                            builtIns = builtIns,
+                            previewBitmap = source,
+                            onState = ::updateDraft,
+                            onImportLut = { lutPicker.launch(arrayOf("application/*", "text/plain", "*/*")) },
+                            onImportOverlay = { overlayPicker.launch(arrayOf("image/*")) },
+                            onPickNeutral = { pickingNeutralPoint = true },
+                        )
+                    }
+                } else {
+                    when (mainTab) {
+                        StackEditorTab.Styles -> StackStylesPanel(
+                            builtIns = builtIns,
+                            onLooks = { beginTool(StackTool.Looks) },
+                            onStyle = { style -> beginTool(StackTool.Looks, initialState = EditorState(style = style)) },
+                            onLut = { lut -> beginTool(StackTool.Looks, initialState = EditorState(lut = lut, lutName = lut.name)) },
+                            onApplyDesign = { design -> mutateStack(operations + design.map { it.copy(id = UUID.randomUUID().toString(), mask = null) }) },
+                            context = context,
+                        )
+                        StackEditorTab.Tools -> StackToolGrid { beginTool(it) }
+                        StackEditorTab.Export -> StackExportPanel(
+                            onExport = { showExportDialog = true },
+                            onShare = ::shareEditedImage,
+                            onEditablePackage = { archivePicker.launch("photo-editor-editable.zip") },
+                        )
+                    }
+                    StackMainNavigation(mainTab) { mainTab = it }
+                }
+            }
+            if (showLayers) {
+                StackLayersSheet(
+                    operations = operations,
+                    onDismiss = { showLayers = false },
+                    onEdit = { operation -> showLayers = false; beginTool(operation.tool, operation) },
+                    onMask = { operation -> showLayers = false; beginTool(operation.tool, operation); showMask = true },
+                    onToggle = { id -> mutateStack(operations.map { operation -> if (operation.id == id) operation.copy(enabled = !operation.enabled) else operation }) },
+                    onDelete = { id -> mutateStack(operations.filterNot { it.id == id }) },
+                    onSaveDesign = {
+                        StackDesignStore.save(context, operations)
+                        Toast.makeText(context, R.string.fossin_design_saved, Toast.LENGTH_SHORT).show()
+                    },
+                )
+            }
+            if (showExitDialog) {
+                AlertDialog(
+                    onDismissRequest = { showExitDialog = false },
+                    title = { Text(stringResource(R.string.fossin_pending_title)) },
+                    text = { Text(stringResource(R.string.fossin_pending_message)) },
+                    confirmButton = { TextButton(onClick = { showExitDialog = false; commitDraft(); leaveEditor() }) { Text(stringResource(R.string.fossin_apply_all)) } },
+                    dismissButton = { TextButton(onClick = { showExitDialog = false; discardDraft(); leaveEditor() }) { Text(stringResource(R.string.fossin_discard_exit)) } },
+                )
+            }
+            if (showExportDialog) {
+                FossinExportDialog(
+                    onKeepProject = {
+                        exportMode = StackExportMode.KeepProject
+                        showExportDialog = false
+                        exportPicker.launch("photo-editor-edit.jpg")
+                    },
+                    onPhotoOnly = {
+                        exportMode = StackExportMode.PhotoOnly
+                        showExportDialog = false
+                        exportPicker.launch("photo-editor-export.jpg")
+                    },
+                    onExportPackage = {
+                        showExportDialog = false
+                        archivePicker.launch("photo-editor-editable.zip")
+                    },
+                    onDismiss = { showExportDialog = false },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun StackTopBar(
+    canUndo: Boolean,
+    canRedo: Boolean,
+    onBack: () -> Unit,
+    onUndo: () -> Unit,
+    onRedo: () -> Unit,
+    onHoldOriginal: (Boolean) -> Unit,
+    onLayers: () -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .statusBarsPadding()
+            .padding(horizontal = 8.dp, vertical = 4.dp)
+            .clip(RoundedCornerShape(18.dp))
+            .background(Color(0xA8070708)),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back), tint = Color.White) }
+        Spacer(Modifier.weight(1f))
+        IconButton(onClick = onUndo, enabled = canUndo) { Icon(AppIcons.AutoMirroredOutlinedUndo, stringResource(R.string.fossin_undo), tint = if (canUndo) Color.White else Color(0xFF4A4A4E)) }
+        IconButton(onClick = onRedo, enabled = canRedo) { Icon(AppIcons.AutoMirroredOutlinedUndo, stringResource(R.string.fossin_redo), tint = if (canRedo) Color.White else Color(0xFF4A4A4E), modifier = Modifier.rotate(180f)) }
+        Box(
+            Modifier
+                .size(48.dp)
+                .pointerInput(Unit) {
+                    detectTapGestures(onPress = {
+                        onHoldOriginal(true)
+                        tryAwaitRelease()
+                        onHoldOriginal(false)
+                    })
+                },
+            contentAlignment = Alignment.Center,
+        ) { Icon(AppIcons.Visibility, stringResource(R.string.fossin_compare), tint = Color.White) }
+        IconButton(onClick = onLayers) { Icon(AppIcons.PhotoLibrary, stringResource(R.string.fossin_layers), tint = Color.White) }
+    }
+}
+
+@Composable
+private fun StackMainNavigation(selected: StackEditorTab, onSelected: (StackEditorTab) -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .navigationBarsPadding()
+            .background(Color(0xF20B0B0D))
+            .padding(horizontal = 18.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.SpaceEvenly,
+    ) {
+        StackMainTab(StackEditorTab.Styles, R.string.fossin_styles, selected, onSelected)
+        StackMainTab(StackEditorTab.Tools, R.string.fossin_tools, selected, onSelected)
+        StackMainTab(StackEditorTab.Export, R.string.fossin_export, selected, onSelected)
+    }
+}
+
+@Composable
+private fun StackMainTab(tab: StackEditorTab, @StringRes label: Int, selected: StackEditorTab, onSelected: (StackEditorTab) -> Unit) {
+    TextButton(onClick = { onSelected(tab) }) {
+        Text(stringResource(label), color = if (tab == selected) Color(0xFFFFC400) else Color(0xFFE2E2E6), fontWeight = if (tab == selected) FontWeight.Bold else FontWeight.Normal)
+    }
+}
+
+@Composable
+private fun StackToolGrid(onTool: (StackTool) -> Unit) {
+    var category by remember { mutableStateOf(StackToolCategory.All) }
+    val visible = StackTool.values().filter { category == StackToolCategory.All || it.category == category }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(max = 310.dp)
+            .background(Color(0xFF0B0B0D))
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+    ) {
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            items(StackToolCategory.values().toList()) { item ->
+                FilterChip(selected = item == category, onClick = { category = item }, label = { Text(stringResource(item.labelRes), fontSize = 12.sp) })
+            }
+        }
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(4),
+            modifier = Modifier.fillMaxWidth().height(238.dp).padding(top = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            gridItems(visible, key = { it.name }) { tool ->
+                Surface(
+                    modifier = Modifier
+                        .height(54.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .clickable { onTool(tool) },
+                    shape = RoundedCornerShape(14.dp),
+                    color = Color(0xFF1A1A1E),
+                ) {
+                    Box(Modifier.fillMaxSize()) {
+                        Text(
+                            stringResource(tool.labelRes),
+                            color = Color.White,
+                            fontSize = 10.sp,
+                            lineHeight = 12.sp,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.align(Alignment.Center).padding(horizontal = 4.dp),
+                        )
+                        if (tool.isNew) Text(stringResource(R.string.fossin_new), color = Color(0xFFFFC400), fontSize = 7.sp, modifier = Modifier.align(Alignment.TopEnd).padding(4.dp))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StackStylesPanel(
+    builtIns: List<LutChoice>,
+    onLooks: () -> Unit,
+    onStyle: (StylePreset) -> Unit,
+    onLut: (LutChoice) -> Unit,
+    onApplyDesign: (List<StackOperation>) -> Unit,
+    context: Context,
+) {
+    val designs by remember(context) { mutableStateOf(StackDesignStore.list(context)) }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(max = 180.dp)
+            .background(Color(0xFF0B0B0D))
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(stringResource(R.string.fossin_styles), color = Color.White, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+            TextButton(onClick = onLooks) { Text(stringResource(R.string.fossin_luts), color = Color(0xFFFFC400)) }
+        }
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            item { StackStyleTile(stringResource(R.string.fossin_original), onLooks) }
+            items(StylePreset.values().filter { it != StylePreset.None }) { style ->
+                StackStyleTile(stringResource(style.labelRes)) { onStyle(style) }
+            }
+            items(builtIns.take(12)) { look -> StackStyleTile(look.name) { onLut(look) } }
+            items(designs) { design -> StackStyleTile(design.name) { onApplyDesign(design.operations) } }
+        }
+    }
+}
+
+@Composable
+private fun StackStyleTile(name: String, onClick: () -> Unit) {
+    Surface(
+        modifier = Modifier.width(82.dp).height(72.dp).clip(RoundedCornerShape(14.dp)).clickable(onClick = onClick),
+        color = Color(0xFF242429),
+        shape = RoundedCornerShape(14.dp),
+    ) {
+        Text(name, color = Color.White, fontSize = 11.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(8.dp))
+    }
+}
+
+@Composable
+private fun StackExportPanel(onExport: () -> Unit, onShare: () -> Unit, onEditablePackage: () -> Unit) {
+    Column(
+        Modifier.fillMaxWidth().background(Color(0xFF0B0B0D)).padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Button(onClick = onExport, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF006E51)), modifier = Modifier.weight(1f)) { Text(stringResource(R.string.fossin_export)) }
+            TextButton(onClick = onShare, modifier = Modifier.weight(1f)) { Text(stringResource(R.string.share), color = Color.White) }
+        }
+        TextButton(onClick = onEditablePackage, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+            Text(stringResource(R.string.fossin_export_editable_package), color = Color(0xFFFFC400), fontSize = 12.sp)
+        }
+    }
+}
+
+@Composable
+private fun StackParameterMenu(
+    parameters: List<StackGestureParameter>,
+    selected: String?,
+    onSelected: (StackGestureParameter) -> Unit,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(0.92f),
+        color = Color(0xD9000000),
+        shape = RoundedCornerShape(12.dp),
+    ) {
+        Column(Modifier.padding(vertical = 8.dp)) {
+            parameters.forEach { parameter ->
+                val isSelected = parameter.key == selected
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .background(if (isSelected) Color(0xFFFFC400) else Color.Transparent)
+                        .clickable { onSelected(parameter) }
+                        .padding(horizontal = 16.dp, vertical = 7.dp),
+                ) {
+                    Text(stringResource(parameter.labelRes), color = if (isSelected) Color.Black else Color.White, modifier = Modifier.weight(1f))
+                    Text(stackValueText(parameter.value, parameter.range), color = if (isSelected) Color.Black else Color.White)
+                }
+            }
+        }
+    }
+}
+
+private fun stackValueText(value: Float, range: ClosedFloatingPointRange<Float>): String {
+    val normalized = ((value - range.start) / (range.endInclusive - range.start).coerceAtLeast(0.001f) * 200f - 100f).roundToInt()
+    return if (normalized > 0) "+$normalized" else normalized.toString()
+}
+
+@Composable
+private fun StackEditControls(
+    tool: StackTool,
+    parameter: StackGestureParameter?,
+    state: EditorState,
+    onCancel: () -> Unit,
+    onConfirm: () -> Unit,
+    onAuto: () -> Unit,
+    onMask: () -> Unit,
+    onLayers: () -> Unit,
+) {
+    Column(Modifier.fillMaxWidth().background(Color(0xF2070708)).padding(horizontal = 12.dp, vertical = 6.dp)) {
+        parameter?.let {
+            Text(
+                "${stringResource(it.labelRes)} ${stackValueText(it.value, it.range)}",
+                color = Color.White,
+                fontSize = 13.sp,
+                modifier = Modifier.padding(start = 8.dp, bottom = 3.dp),
+            )
+            StackTickRuler(it.value, it.range)
+        }
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+            TextButton(onClick = onCancel) { Text("×", color = Color.White, fontSize = 28.sp) }
+            if (tool == StackTool.Tune || tool == StackTool.WhiteBalance || tool == StackTool.Hdr) TextButton(onClick = onAuto) { Text(stringResource(R.string.fossin_auto), color = Color.White) }
+            if (!tool.isGlobalGeometry) TextButton(onClick = onMask) { Text(stringResource(R.string.fossin_mask), color = Color.White) }
+            TextButton(onClick = onLayers) { Text(stringResource(R.string.fossin_layers), color = Color.White) }
+            TextButton(onClick = onConfirm) { Text("✓", color = Color(0xFFFFC400), fontSize = 25.sp) }
+        }
+    }
+}
+
+@Composable
+private fun StackTickRuler(value: Float, range: ClosedFloatingPointRange<Float>) {
+    val fraction = ((value - range.start) / (range.endInclusive - range.start).coerceAtLeast(0.0001f)).coerceIn(0f, 1f)
+    ComposeCanvas(Modifier.fillMaxWidth().height(22.dp)) {
+        val selected = (fraction * 100).roundToInt()
+        repeat(101) { index ->
+            val x = size.width * index / 100f
+            val highlighted = kotlin.math.abs(index - selected) <= 8
+            drawLine(if (highlighted) Color(0xFFFFC400) else Color(0xFFE6E6E8), Offset(x, if (index % 10 == 0) 2f else 7f), Offset(x, 21f), strokeWidth = if (index % 10 == 0) 2.5f else 1.3f)
+        }
+        drawCircle(Color(0xFFFFC400), 4f, Offset(size.width * fraction, 3f))
+    }
+}
+
+@Composable
+private fun StackToolContext(
+    tool: StackTool,
+    operation: StackOperation,
+    builtIns: List<LutChoice>,
+    previewBitmap: Bitmap?,
+    onState: ((EditorState) -> EditorState) -> Unit,
+    onImportLut: () -> Unit,
+    onImportOverlay: () -> Unit,
+    onPickNeutral: () -> Unit,
+) {
+    when (tool) {
+        StackTool.Looks -> {
+            Column(Modifier.fillMaxWidth().background(Color(0xF2070708)).padding(horizontal = 12.dp, vertical = 4.dp)) {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    items(StylePreset.values().toList()) { style ->
+                        FilterChip(
+                            selected = operation.state.style == style,
+                            onClick = { onState { it.copy(style = style) } },
+                            label = { Text(stringResource(style.labelRes), fontSize = 11.sp) },
+                        )
+                    }
+                }
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(stringResource(R.string.fossin_luts), color = Color.White, modifier = Modifier.weight(1f))
+                    TextButton(onClick = onImportLut) { Text(stringResource(R.string.fossin_import_lut), color = Color(0xFFFFC400)) }
+                }
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    item {
+                        FilterChip(selected = operation.state.lut == null, onClick = { onState { it.copy(lut = null, lutName = null, lutUri = null) } }, label = { Text(stringResource(R.string.fossin_original), fontSize = 11.sp) })
+                    }
+                    items(builtIns) { choice ->
+                        FilterChip(
+                            selected = operation.state.lutName == choice.name,
+                            onClick = { onState { it.copy(lut = choice, lutName = choice.name, lutUri = null) } },
+                            label = { Text(choice.name, fontSize = 11.sp) },
+                        )
+                    }
+                }
+            }
+        }
+        StackTool.ColorGrading -> StackColorGradingWheels(operation.state, onState)
+        StackTool.Curves -> StackCurveEditor(operation.state, previewBitmap, onState)
+        StackTool.WhiteBalance -> StackWhiteBalanceContext(onPickNeutral)
+        StackTool.Crop -> StackCropModeRow(operation.state, onState)
+        StackTool.LensBlur -> StackLensShapeRow(operation.state, onState)
+        StackTool.Hdr -> StackHdrPresets(operation.state, onState)
+        StackTool.DoubleExposure -> StackDoubleExposureContext(operation.state, onState, onImportOverlay)
+        StackTool.Text -> StackTextEditor(operation.state, onState)
+        StackTool.Frame -> StackFrameChooser(operation.state, onState)
+        else -> Unit
+    }
+}
+
+@Composable
+private fun StackColorGradingWheels(state: EditorState, onState: ((EditorState) -> EditorState) -> Unit) {
+    Column(Modifier.fillMaxWidth().background(Color(0xF2070708)).padding(horizontal = 14.dp, vertical = 4.dp)) {
+        Text(stringResource(R.string.fossin_color_grading), color = Color.White, fontWeight = FontWeight.SemiBold)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+            StackColorWheel(R.string.fossin_grading_shadows, state.gradingShadowHue, state.gradingShadowAmount) { hue, amount ->
+                onState { it.copy(gradingShadowHue = hue, gradingShadowAmount = amount) }
+            }
+            StackColorWheel(R.string.fossin_grading_midtones, state.gradingMidtoneHue, state.gradingMidtoneAmount) { hue, amount ->
+                onState { it.copy(gradingMidtoneHue = hue, gradingMidtoneAmount = amount) }
+            }
+            StackColorWheel(R.string.fossin_grading_highlights, state.gradingHighlightHue, state.gradingHighlightAmount) { hue, amount ->
+                onState { it.copy(gradingHighlightHue = hue, gradingHighlightAmount = amount) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StackColorWheel(@StringRes label: Int, hue: Float, amount: Float, onChanged: (Float, Float) -> Unit) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        ComposeCanvas(
+            Modifier
+                .size(76.dp)
+                .pointerInput(hue, amount) {
+                    detectDragGestures(
+                        onDragStart = { point ->
+                            val cx = size.width / 2f
+                            val cy = size.height / 2f
+                            val dx = point.x - cx
+                            val dy = point.y - cy
+                            val newHue = ((kotlin.math.atan2(dy, dx) / (2.0 * Math.PI) + 1.0) % 1.0).toFloat()
+                            val newAmount = (kotlin.math.sqrt((dx * dx + dy * dy).toDouble()) / (minOf(size.width, size.height) / 2f)).toFloat().coerceIn(0f, 1f)
+                            onChanged(newHue, newAmount)
+                        },
+                        onDrag = { change, _ ->
+                            val cx = size.width / 2f
+                            val cy = size.height / 2f
+                            val dx = change.position.x - cx
+                            val dy = change.position.y - cy
+                            val newHue = ((kotlin.math.atan2(dy, dx) / (2.0 * Math.PI) + 1.0) % 1.0).toFloat()
+                            val newAmount = (kotlin.math.sqrt((dx * dx + dy * dy).toDouble()) / (minOf(size.width, size.height) / 2f)).toFloat().coerceIn(0f, 1f)
+                            onChanged(newHue, newAmount)
+                            change.consume()
+                        },
+                    )
+                },
+        ) {
+            val radius = minOf(size.width, size.height) / 2f
+            repeat(48) { index ->
+                val start = index / 48f * 360f
+                val color = Color.hsv(start, 0.85f, 0.95f)
+                drawArc(color, start, 360f / 48f + 1f, false, style = androidx.compose.ui.graphics.drawscope.Stroke(width = radius))
+            }
+            drawCircle(Color(0xFF151518), radius * 0.34f)
+            val angle = hue * (2.0 * Math.PI)
+            drawCircle(Color.White, 5f, Offset(radius + kotlin.math.cos(angle).toFloat() * radius * amount, radius + kotlin.math.sin(angle).toFloat() * radius * amount))
+        }
+        Text(stringResource(label), color = Color.White, fontSize = 10.sp)
+    }
+}
+
+@Composable
+private fun StackCurveEditor(state: EditorState, bitmap: Bitmap?, onState: ((EditorState) -> EditorState) -> Unit) {
+    var channel by remember { mutableStateOf(CurveChannel.Master) }
+    val histogram = remember(bitmap) { bitmap?.let(::stackHistogram) ?: IntArray(48) }
+    Column(Modifier.fillMaxWidth().background(Color(0xF2070708)).padding(horizontal = 12.dp, vertical = 4.dp)) {
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+            items(CurveChannel.values().toList()) { item ->
+                FilterChip(selected = item == channel, onClick = { channel = item }, label = { Text(item.name, fontSize = 10.sp) })
+            }
+        }
+        StackHistogramCurve(
+            points = state.curves[channel] ?: defaultCurvePoints,
+            histogram = histogram,
+            onPoints = { points -> onState { it.copy(curves = it.curves + (channel to points)) } },
+        )
+    }
+}
+
+@Composable
+private fun StackHistogramCurve(points: List<CurvePoint>, histogram: IntArray, onPoints: (List<CurvePoint>) -> Unit) {
+    var selected by remember { mutableStateOf<Int?>(null) }
+    val current by rememberUpdatedState(points)
+    ComposeCanvas(
+        Modifier
+            .fillMaxWidth()
+            .height(122.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(Color(0xFF18181C))
+            .pointerInput(Unit) {
+                detectDragGestures(
+                    onDragStart = { offset ->
+                        selected = current.indices.minByOrNull { index ->
+                            val point = current[index]
+                            val dx = offset.x - point.x * size.width
+                            val dy = offset.y - (1f - point.y) * size.height
+                            dx * dx + dy * dy
+                        }
+                    },
+                    onDrag = { change, _ ->
+                        val index = selected ?: return@detectDragGestures
+                        val old = current[index]
+                        val minX = current.getOrNull(index - 1)?.x?.plus(0.02f) ?: 0f
+                        val maxX = current.getOrNull(index + 1)?.x?.minus(0.02f) ?: 1f
+                        val next = old.copy(
+                            x = if (index == 0) 0f else if (index == current.lastIndex) 1f else (change.position.x / size.width).coerceIn(minX, maxX),
+                            y = (1f - change.position.y / size.height).coerceIn(0f, 1f),
+                        )
+                        onPoints(current.toMutableList().also { it[index] = next })
+                        change.consume()
+                    },
+                    onDragEnd = { selected = null },
+                    onDragCancel = { selected = null },
+                )
+            },
+    ) {
+        val largest = histogram.maxOrNull()?.coerceAtLeast(1) ?: 1
+        histogram.forEachIndexed { index, value ->
+            val height = (value.toFloat() / largest * size.height * 0.75f).coerceAtLeast(1f)
+            drawRect(Color(0xFF33333A), Offset(index * size.width / 48f, size.height - height), androidx.compose.ui.geometry.Size(size.width / 56f, height))
+        }
+        for (index in 0 until points.lastIndex) {
+            val a = points[index]
+            val b = points[index + 1]
+            drawLine(Color(0xFFFFC400), Offset(a.x * size.width, (1f - a.y) * size.height), Offset(b.x * size.width, (1f - b.y) * size.height), strokeWidth = 3f)
+        }
+        points.forEach { point -> drawCircle(Color.White, 5f, Offset(point.x * size.width, (1f - point.y) * size.height)) }
+    }
+}
+
+private fun stackHistogram(bitmap: Bitmap): IntArray {
+    val preview = scaledPreviewBitmap(bitmap, 256)
+    val pixels = IntArray(preview.width * preview.height)
+    preview.getPixels(pixels, 0, preview.width, 0, 0, preview.width, preview.height)
+    if (preview !== bitmap) preview.recycle()
+    return IntArray(48).also { bins ->
+        pixels.forEach { pixel ->
+            val luma = (android.graphics.Color.red(pixel) * 0.2126f + android.graphics.Color.green(pixel) * 0.7152f + android.graphics.Color.blue(pixel) * 0.0722f) / 255f
+            bins[(luma * (bins.size - 1)).roundToInt().coerceIn(0, bins.lastIndex)]++
+        }
+    }
+}
+
+@Composable
+private fun StackLensShapeRow(state: EditorState, onState: ((EditorState) -> EditorState) -> Unit) {
+    Column(Modifier.fillMaxWidth().background(Color(0xF2070708)).padding(horizontal = 12.dp, vertical = 4.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            LensBlurShape.values().forEach { shape ->
+                FilterChip(selected = state.lensBlurShape == shape, onClick = { onState { it.copy(lensBlurShape = shape) } }, label = { Text(stringResource(if (shape == LensBlurShape.Radial) R.string.fossin_radial else R.string.fossin_linear), fontSize = 11.sp) })
+            }
+        }
+        Text(stringResource(R.string.fossin_lens_blur_gesture_hint), color = Color(0xFFA8A8AF), fontSize = 11.sp)
+    }
+}
+
+@Composable
+private fun StackCropModeRow(state: EditorState, onState: ((EditorState) -> EditorState) -> Unit) {
+    Column(Modifier.fillMaxWidth().background(Color(0xF2070708)).padding(horizontal = 12.dp, vertical = 4.dp)) {
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            items(CropMode.values().toList()) { mode ->
+                FilterChip(
+                    selected = state.cropMode == mode,
+                    onClick = { onState { it.copy(cropMode = mode) } },
+                    label = { Text(stringResource(stackCropModeLabel(mode)), fontSize = 11.sp) },
+                )
+            }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+            TextButton(onClick = { onState { it.copy(rotation = (it.rotation + 270) % 360) } }) {
+                Text(stringResource(R.string.fossin_rotate_left), color = Color.White)
+            }
+            TextButton(onClick = { onState { it.copy(rotation = (it.rotation + 90) % 360) } }) {
+                Text(stringResource(R.string.fossin_rotate_right), color = Color.White)
+            }
+        }
+    }
+}
+
+@Composable
+private fun StackWhiteBalanceContext(onPickNeutral: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().background(Color(0xF2070708)).padding(horizontal = 12.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.Center,
+    ) {
+        TextButton(onClick = onPickNeutral) {
+            Text(stringResource(R.string.fossin_pick_neutral), color = Color(0xFFFFC400))
+        }
+    }
+}
+
+@StringRes
+private fun stackCropModeLabel(mode: CropMode): Int = when (mode) {
+    CropMode.Original -> R.string.fossin_original
+    CropMode.Free -> R.string.fossin_free
+    CropMode.Square -> R.string.fossin_square
+    CropMode.ThreeTwo -> R.string.fossin_three_two
+    CropMode.FourThree -> R.string.fossin_four_three
+    CropMode.FiveFour -> R.string.fossin_five_four
+    CropMode.SevenFive -> R.string.fossin_seven_five
+    CropMode.SixteenNine -> R.string.fossin_sixteen_nine
+}
+
+@Composable
+private fun StackHdrPresets(state: EditorState, onState: ((EditorState) -> EditorState) -> Unit) {
+    val items = listOf(
+        R.string.fossin_hdr_nature to 0.35f,
+        R.string.fossin_hdr_people to 0.22f,
+        R.string.fossin_hdr_fine to 0.55f,
+        R.string.fossin_hdr_intense to 0.82f,
+    )
+    LazyRow(
+        Modifier.fillMaxWidth().background(Color(0xF2070708)).padding(horizontal = 12.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        items(items) { item ->
+            FilterChip(
+                selected = kotlin.math.abs((state.snapEffects[SnapEffect.HdrScape] ?: 0f) - item.second) < 0.04f,
+                onClick = { onState { it.copy(snapEffects = it.snapEffects + (SnapEffect.HdrScape to item.second)) } },
+                label = { Text(stringResource(item.first), fontSize = 11.sp) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun StackDoubleExposureContext(
+    state: EditorState,
+    onState: ((EditorState) -> EditorState) -> Unit,
+    onImportOverlay: () -> Unit,
+) {
+    Column(Modifier.fillMaxWidth().background(Color(0xF2070708)).padding(horizontal = 12.dp, vertical = 4.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(stringResource(R.string.fossin_double_exposure), color = Color.White, modifier = Modifier.weight(1f))
+            TextButton(onClick = onImportOverlay) {
+                Text(stringResource(R.string.fossin_import_overlay), color = Color(0xFFFFC400))
+            }
+        }
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            items(OverlayBlendMode.values().toList()) { mode ->
+                FilterChip(
+                    selected = state.overlayBlendMode == mode,
+                    onClick = { onState { it.copy(overlayBlendMode = mode) } },
+                    label = { Text(mode.name, fontSize = 10.sp) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun StackTextEditor(state: EditorState, onState: ((EditorState) -> EditorState) -> Unit) {
+    BasicTextField(
+        value = state.text,
+        onValueChange = { text -> onState { it.copy(text = text) } },
+        textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 16.sp),
+        modifier = Modifier.fillMaxWidth().background(Color(0xF2070708)).padding(14.dp),
+        decorationBox = { field ->
+            if (state.text.isBlank()) Text(stringResource(R.string.fossin_text_hint), color = Color(0xFF98989E))
+            field()
+        },
+    )
+}
+
+@Composable
+private fun StackFrameChooser(state: EditorState, onState: ((EditorState) -> EditorState) -> Unit) {
+    LazyRow(
+        Modifier.fillMaxWidth().background(Color(0xF2070708)).padding(horizontal = 12.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        items(FrameStyle.values().toList()) { style ->
+            FilterChip(selected = state.frameStyle == style, onClick = { onState { it.copy(frameStyle = style) } }, label = { Text(style.name, fontSize = 11.sp) })
+        }
+    }
+}
+
+@Composable
+private fun StackMaskControls(
+    advanced: Boolean,
+    addMode: Boolean,
+    overlayVisible: Boolean,
+    feather: Float,
+    onAdd: () -> Unit,
+    onSubtract: () -> Unit,
+    onInvert: () -> Unit,
+    onOverlay: () -> Unit,
+    onFeather: (Float) -> Unit,
+) {
+    Column(Modifier.fillMaxWidth().background(Color(0xE8000000)).padding(horizontal = 12.dp, vertical = 4.dp)) {
+        Text(stringResource(R.string.fossin_mask_prompt), color = Color.White, fontSize = 12.sp)
+        if (advanced) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                FilterChip(selected = addMode, onClick = onAdd, label = { Text(stringResource(R.string.fossin_mask_add), fontSize = 10.sp) })
+                FilterChip(selected = !addMode, onClick = onSubtract, label = { Text(stringResource(R.string.fossin_mask_subtract), fontSize = 10.sp) })
+                TextButton(onClick = onInvert) { Text(stringResource(R.string.fossin_mask_invert), color = Color.White, fontSize = 10.sp) }
+                TextButton(onClick = onOverlay) { Text(stringResource(R.string.fossin_mask_overlay), color = if (overlayVisible) Color(0xFFFFC400) else Color.White, fontSize = 10.sp) }
+            }
+            Slider(value = feather, onValueChange = onFeather, valueRange = 0f..0.4f, modifier = Modifier.fillMaxWidth())
+        } else {
+            Text(stringResource(R.string.fossin_mask_model_missing), color = Color(0xFFA9A9AE), fontSize = 11.sp)
+        }
+    }
+}
+
+@Composable
+private fun BoxScope.StackMaskOverlay(mask: StackMask, bitmap: Bitmap) {
+    ComposeCanvas(Modifier.fillMaxSize()) {
+        val rect = displayedImageRect(size.width, size.height, bitmap)
+        val cols = 48
+        val rows = maxOf(1, (cols * rect.height / rect.width).roundToInt())
+        for (row in 0 until rows) for (column in 0 until cols) {
+            val alpha = sampleStackMask(mask, (column + 0.5f) / cols, (row + 0.5f) / rows)
+            if (alpha > 0.04f) {
+                drawRect(
+                    Color(0xFFE53935).copy(alpha = alpha * 0.42f),
+                    Offset(rect.left + column * rect.width / cols, rect.top + row * rect.height / rows),
+                    androidx.compose.ui.geometry.Size(rect.width / cols + 1f, rect.height / rows + 1f),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun BoxScope.StackLensGuide(state: EditorState, bitmap: Bitmap) {
+    ComposeCanvas(Modifier.fillMaxSize()) {
+        val rect = displayedImageRect(size.width, size.height, bitmap)
+        val center = Offset(rect.left + state.lensBlurX * rect.width, rect.top + state.lensBlurY * rect.height)
+        if (state.lensBlurShape == LensBlurShape.Radial) {
+            drawCircle(Color(0xFFFFC400), state.lensBlurRadius * minOf(rect.width, rect.height), center, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2f))
+        } else {
+            val length = maxOf(rect.width, rect.height)
+            val radians = state.lensBlurAngle * Math.PI.toFloat()
+            val delta = Offset(
+                kotlin.math.cos(radians.toDouble()).toFloat() * length,
+                kotlin.math.sin(radians.toDouble()).toFloat() * length,
+            )
+            drawLine(Color(0xFFFFC400), center - delta, center + delta, strokeWidth = 2f)
+        }
+        drawCircle(Color.White, 5f, center)
+    }
+}
+
+@Composable
+private fun BoxScope.StackVignetteGuide(state: EditorState, bitmap: Bitmap) {
+    ComposeCanvas(Modifier.fillMaxSize()) {
+        val rect = displayedImageRect(size.width, size.height, bitmap)
+        val center = Offset(rect.left + state.vignetteX * rect.width, rect.top + state.vignetteY * rect.height)
+        drawCircle(Color(0xFFFFC400), state.vignetteRadius * minOf(rect.width, rect.height), center, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.8f))
+        drawCircle(Color(0xFFFFC400), 5f, center)
+    }
+}
+
+@Composable
+private fun BoxScope.StackCropGuide(state: EditorState, bitmap: Bitmap) {
+    if (state.cropMode != CropMode.Free) return
+    ComposeCanvas(Modifier.fillMaxSize()) {
+        val rect = displayedImageRect(size.width, size.height, bitmap)
+        val left = rect.left + state.cropLeft * rect.width
+        val top = rect.top + state.cropTop * rect.height
+        val right = rect.left + state.cropRight * rect.width
+        val bottom = rect.top + state.cropBottom * rect.height
+        val shade = Color.Black.copy(alpha = 0.48f)
+        drawRect(shade, Offset(rect.left, rect.top), androidx.compose.ui.geometry.Size(rect.width, (top - rect.top).coerceAtLeast(0f)))
+        drawRect(shade, Offset(rect.left, bottom), androidx.compose.ui.geometry.Size(rect.width, (rect.top + rect.height - bottom).coerceAtLeast(0f)))
+        drawRect(shade, Offset(rect.left, top), androidx.compose.ui.geometry.Size((left - rect.left).coerceAtLeast(0f), (bottom - top).coerceAtLeast(0f)))
+        drawRect(shade, Offset(right, top), androidx.compose.ui.geometry.Size((rect.left + rect.width - right).coerceAtLeast(0f), (bottom - top).coerceAtLeast(0f)))
+        val line = Color(0xFFFFC400)
+        drawRect(line, Offset(left, top), androidx.compose.ui.geometry.Size((right - left).coerceAtLeast(0f), 2f))
+        drawRect(line, Offset(left, bottom - 2f), androidx.compose.ui.geometry.Size((right - left).coerceAtLeast(0f), 2f))
+        drawRect(line, Offset(left, top), androidx.compose.ui.geometry.Size(2f, (bottom - top).coerceAtLeast(0f)))
+        drawRect(line, Offset(right - 2f, top), androidx.compose.ui.geometry.Size(2f, (bottom - top).coerceAtLeast(0f)))
+    }
+}
+
+@Composable
+private fun StackLayersSheet(
+    operations: List<StackOperation>,
+    onDismiss: () -> Unit,
+    onEdit: (StackOperation) -> Unit,
+    onMask: (StackOperation) -> Unit,
+    onToggle: (String) -> Unit,
+    onDelete: (String) -> Unit,
+    onSaveDesign: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier.fillMaxSize().background(Color(0xE9000000)).padding(horizontal = 18.dp, vertical = 48.dp),
+        color = Color(0xFF151518),
+        shape = RoundedCornerShape(24.dp),
+    ) {
+        Column(Modifier.fillMaxSize().padding(16.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(stringResource(R.string.fossin_layers), color = Color.White, style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                TextButton(onClick = onDismiss) { Text(stringResource(R.string.close), color = Color(0xFFFFC400)) }
+            }
+            Surface(Modifier.fillMaxWidth().padding(vertical = 6.dp), color = Color(0xFF25252A), shape = RoundedCornerShape(12.dp)) {
+                Text(stringResource(R.string.fossin_original_layer), color = Color.White, modifier = Modifier.padding(14.dp))
+            }
+            Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                operations.forEach { operation ->
+                    Surface(color = Color(0xFF222227), shape = RoundedCornerShape(14.dp)) {
+                        Column(Modifier.padding(12.dp)) {
+                            Text(stringResource(operation.tool.labelRes), color = Color.White, fontWeight = FontWeight.SemiBold)
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                TextButton(onClick = { onEdit(operation) }) { Text(stringResource(R.string.fossin_edit), color = Color.White, fontSize = 11.sp) }
+                                if (!operation.tool.isGlobalGeometry) TextButton(onClick = { onMask(operation) }) { Text(stringResource(R.string.fossin_mask), color = Color.White, fontSize = 11.sp) }
+                                TextButton(onClick = { onToggle(operation.id) }) { Text(stringResource(if (operation.enabled) R.string.fossin_disable else R.string.fossin_enable), color = if (operation.enabled) Color.White else Color(0xFFA0A0A8), fontSize = 11.sp) }
+                                TextButton(onClick = { onDelete(operation.id) }) { Text(stringResource(R.string.fossin_delete), color = Color(0xFFFF887B), fontSize = 11.sp) }
+                            }
+                        }
+                    }
+                }
+            }
+            Button(onClick = onSaveDesign, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF006E51)), modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.fossin_save_design)) }
+        }
+    }
+}
+
+@Composable
+private fun StackEditorHall(
+    onImport: () -> Unit,
+    onOpenCamera: () -> Unit,
+    onOpenProject: (StackProjectSummary) -> Unit,
+) {
+    val context = LocalContext.current
+    var projects by remember { mutableStateOf<List<StackProjectSummary>>(emptyList()) }
+    var refresh by remember { mutableStateOf(0) }
+    LaunchedEffect(refresh) { projects = StackProjectStore.list(context) }
+    Surface(Modifier.fillMaxSize(), color = Color(0xFF080809)) {
+        Column(
+            Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(stringResource(R.string.app_name), color = Color.White, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                    Text(stringResource(R.string.fossin_library_subtitle), color = Color(0xFFA0A0A8), fontSize = 13.sp)
+                }
+                IconButton(onClick = { refresh++ }) { Icon(AppIcons.RestartAlt, stringResource(R.string.fossin_library_refresh), tint = Color.White) }
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Button(onClick = onImport, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF006E51))) { Text(stringResource(R.string.fossin_import)) }
+                TextButton(onClick = onOpenCamera, modifier = Modifier.weight(1f)) { Text(stringResource(R.string.fossin_open_camera), color = Color.White) }
+            }
+            Text(stringResource(R.string.fossin_library_imported_edited), color = Color.White, style = MaterialTheme.typography.titleLarge)
+            if (projects.isEmpty()) {
+                Surface(Modifier.fillMaxWidth().height(110.dp), color = Color(0xFF17171B), shape = RoundedCornerShape(18.dp)) {
+                    Text(stringResource(R.string.fossin_library_imported_empty), color = Color(0xFFA6A6AC), textAlign = TextAlign.Center, modifier = Modifier.padding(20.dp))
+                }
+            } else {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    items(projects, key = StackProjectSummary::id) { project -> StackProjectCard(project, onOpenProject) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StackProjectCard(project: StackProjectSummary, onOpen: (StackProjectSummary) -> Unit) {
+    val context = LocalContext.current
+    var preview by remember(project.uri) { mutableStateOf<Bitmap?>(null) }
+    LaunchedEffect(project.uri) { preview = loadBitmap(context, project.uri, 384) }
+    Surface(
+        Modifier.width(144.dp).height(184.dp).clip(RoundedCornerShape(18.dp)).clickable { onOpen(project) },
+        color = Color(0xFF1B1B20),
+        shape = RoundedCornerShape(18.dp),
+    ) {
+        Box(Modifier.fillMaxSize()) {
+            preview?.let { Image(it.asImageBitmap(), project.title, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) }
+            Text(project.title, color = Color.White, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.align(Alignment.BottomStart).fillMaxWidth().background(Color(0xB8000000)).padding(10.dp))
+        }
+    }
+}
+
+private data class StackDesign(val name: String, val operations: List<StackOperation>)
+
+private object StackDesignStore {
+    private const val PREFERENCES = "fossin_stack_designs"
+    private const val KEY = "designs"
+
+    fun save(context: Context, operations: List<StackOperation>) {
+        val existing = list(context).toMutableList()
+        val serial = JsonArray()
+        operations.forEach { operation ->
+            val state = operation.state.copy(lut = null, lutUri = null, overlayUri = null)
+            val bundle = with(editorStateSaver) { FossinProjectSaverScope.save(state) } ?: Bundle()
+            serial.add(JsonObject().apply {
+                addProperty("tool", operation.tool.name)
+                addProperty("state", encodeBundle(bundle))
+                operation.preset?.let { addProperty("preset", it) }
+            })
+        }
+        existing += StackDesign("Design ${existing.size + 1}", operations.map { it.copy(mask = null) })
+        val raw = JsonArray().apply {
+            existing.takeLast(24).forEachIndexed { index, design ->
+                add(JsonObject().apply {
+                    addProperty("name", design.name)
+                    if (index == existing.lastIndex) add("operations", serial) else add("operations", encodeDesign(design.operations))
+                })
+            }
+        }
+        context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).edit().putString(KEY, raw.toString()).apply()
+    }
+
+    fun list(context: Context): List<StackDesign> = runCatching {
+        val raw = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).getString(KEY, null) ?: return emptyList()
+        JsonParser.parseString(raw).asJsonArray.mapNotNull { item ->
+            val objectValue = item.asJsonObject
+            val ops = objectValue.getAsJsonArray("operations")?.mapNotNull { decodeDesignOperation(it.asJsonObject) }.orEmpty()
+            if (ops.isEmpty()) null else StackDesign(objectValue.string("name") ?: "Design", ops)
+        }
+    }.getOrDefault(emptyList())
+
+    private fun encodeDesign(operations: List<StackOperation>) = JsonArray().apply {
+        operations.forEach { operation ->
+            val bundle = with(editorStateSaver) { FossinProjectSaverScope.save(operation.state.copy(lut = null, lutUri = null, overlayUri = null)) } ?: Bundle()
+            add(JsonObject().apply {
+                addProperty("tool", operation.tool.name)
+                addProperty("state", encodeBundle(bundle))
+                operation.preset?.let { addProperty("preset", it) }
+            })
+        }
+    }
+
+    private fun decodeDesignOperation(value: JsonObject): StackOperation? = runCatching {
+        val tool = value.string("tool")?.let { enumValueOf<StackTool>(it) } ?: return@runCatching null
+        val state = value.string("state")?.let(::decodeBundle)?.let(editorStateSaver::restore) ?: return@runCatching null
+        StackOperation(tool = tool, state = state, preset = value.string("preset"))
+    }.getOrNull()
+
+    private fun JsonObject.string(key: String) = get(key)?.takeUnless { it.isJsonNull }?.asString
+}
+
+private fun mergeStackMasks(current: StackMask?, next: StackMask, add: Boolean): StackMask {
+    if (current == null || current.width != next.width || current.height != next.height) return next
+    val combined = ByteArray(current.alpha.size) { index ->
+        val old = current.alpha[index].toInt() and 0xff
+        val incoming = next.alpha[index].toInt() and 0xff
+        (if (add) maxOf(old, incoming) else (old - incoming).coerceAtLeast(0)).toByte()
+    }
+    return current.copy(alpha = combined)
+}
+
+/** Soft raster brush used after the automatic seed has created a mask. */
+private fun paintStackMask(mask: StackMask, point: NormalizedPoint, add: Boolean, radiusFraction: Float = 0.065f): StackMask {
+    val centerX = point.x.coerceIn(0f, 1f) * (mask.width - 1)
+    val centerY = point.y.coerceIn(0f, 1f) * (mask.height - 1)
+    val radius = (minOf(mask.width, mask.height) * radiusFraction.coerceIn(0.01f, 0.35f)).coerceAtLeast(1f)
+    val left = (centerX - radius).roundToInt().coerceAtLeast(0)
+    val right = (centerX + radius).roundToInt().coerceAtMost(mask.width - 1)
+    val top = (centerY - radius).roundToInt().coerceAtLeast(0)
+    val bottom = (centerY + radius).roundToInt().coerceAtMost(mask.height - 1)
+    val output = mask.alpha.copyOf()
+    for (y in top..bottom) for (x in left..right) {
+        val distance = kotlin.math.sqrt(((x - centerX) * (x - centerX) + (y - centerY) * (y - centerY)).toDouble()).toFloat()
+        if (distance > radius) continue
+        val strength = ((1f - distance / radius) * 255f).roundToInt().coerceIn(0, 255)
+        val index = y * mask.width + x
+        val previous = output[index].toInt() and 0xff
+        output[index] = if (add) maxOf(previous, strength).toByte() else (previous - strength).coerceAtLeast(0).toByte()
+    }
+    return mask.copy(alpha = output)
+}
+
+private fun stackAutoTune(bitmap: Bitmap, state: EditorState): EditorState {
+    val preview = scaledPreviewBitmap(bitmap, 256)
+    val pixels = IntArray(preview.width * preview.height)
+    preview.getPixels(pixels, 0, preview.width, 0, 0, preview.width, preview.height)
+    if (preview !== bitmap) preview.recycle()
+    val mean = pixels.asSequence().map { color ->
+        (android.graphics.Color.red(color) * 0.2126f + android.graphics.Color.green(color) * 0.7152f + android.graphics.Color.blue(color) * 0.0722f) / 255f
+    }.average().toFloat()
+    val exposure = ((0.5f - mean) * 1.4f).coerceIn(-0.7f, 0.7f)
+    return state.copy(exposure = exposure, contrast = 1.08f, ambiance = 0.16f, shadows = 0.12f, highlights = -0.08f)
 }
