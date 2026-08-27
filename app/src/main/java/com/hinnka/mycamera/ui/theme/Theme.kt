@@ -58,7 +58,9 @@ fun PhotonCameraTheme(
             val activity = view.context.findActivity()
             if (activity != null) {
                 val window = activity.window
-                WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = false
+                val controller = WindowCompat.getInsetsController(window, view)
+                controller.isAppearanceLightStatusBars = !darkTheme
+                controller.isAppearanceLightNavigationBars = !darkTheme
             }
             view.isForceDarkAllowed = false
         }

@@ -82,6 +82,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -99,9 +100,12 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.annotation.StringRes
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -122,6 +126,7 @@ import com.hinnka.mycamera.model.ColorRecipeParams
 import com.hinnka.mycamera.raw.RawDemosaicProcessor
 import com.hinnka.mycamera.ui.icons.AppIcons
 import com.hinnka.mycamera.ui.theme.PhotonCameraTheme
+import com.hinnka.mycamera.update.AppUpdateManager
 import com.google.gson.GsonBuilder
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
@@ -153,11 +158,20 @@ class FossinEditorActivity : ComponentActivity() {
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
         )
         setContent {
-            PhotonCameraTheme {
+            val preferencesRepository = remember { PhotoEditorPreferencesRepository(applicationContext) }
+            val editorPreferences by preferencesRepository.preferences.collectAsState(initial = PhotoEditorPreferences())
+            val useDarkTheme = when (editorPreferences.theme) {
+                PhotoEditorThemeMode.System -> isSystemInDarkTheme()
+                PhotoEditorThemeMode.Light -> false
+                PhotoEditorThemeMode.Dark -> true
+            }
+            PhotonCameraTheme(darkTheme = useDarkTheme) {
                 FossinStackEditor(
                     initialUri = intent.sharedImageUri() ?: intent.data,
                     onOpenCamera = { startActivity(Intent(this, MainActivity::class.java)) },
-                    onFinish = { finish() }
+                    onFinish = { finish() },
+                    preferences = editorPreferences,
+                    preferencesRepository = preferencesRepository,
                 )
             }
         }
@@ -2690,8 +2704,12 @@ private fun FossinHallSection(
 private fun FossinHallPhotoCard(item: FossinLibraryItem, onClick: () -> Unit) {
     val context = LocalContext.current
     var preview by remember(item.uri) { mutableStateOf<Bitmap?>(null) }
+    var isPanorama by remember(item.uri) { mutableStateOf(false) }
     LaunchedEffect(item.uri) {
         preview = loadBitmap(context, item.uri, maxEdge = 384)
+        preview?.let { bitmap ->
+            isPanorama = Panorama360.detect(context, item.uri, bitmap.width, bitmap.height) != null
+        }
     }
     Surface(
         modifier = Modifier
@@ -2716,6 +2734,13 @@ private fun FossinHallPhotoCard(item: FossinLibraryItem, onClick: () -> Unit) {
                 tint = Color(0xFF77777E),
                 modifier = Modifier.align(Alignment.Center).size(34.dp),
             )
+            if (isPanorama) {
+                Surface(
+                    color = Color(0xD9000000),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.align(Alignment.TopEnd).padding(8.dp),
+                ) { Text("360°", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)) }
+            }
             Column(
                 Modifier
                     .align(Alignment.BottomStart)
@@ -4583,7 +4608,7 @@ private fun persistReadPermission(context: android.content.Context, uri: Uri) {
  */
 
 private const val FOSSIN_STACK_PROJECTS_DIRECTORY = "fossin-stack-projects"
-private const val FOSSIN_STACK_SCHEMA_VERSION = 3
+private const val FOSSIN_STACK_SCHEMA_VERSION = 4
 private const val FOSSIN_STACK_PREVIOUS_SCHEMA_VERSION = 2
 private const val STACK_MASK_EDGE = 512
 
@@ -4591,6 +4616,11 @@ private enum class StackEditorTab { Styles, Tools, Export }
 private enum class StackExportMode { KeepProject, PhotoOnly }
 private enum class RawWhiteBalanceMode { AsShot, Auto, Manual }
 private enum class RawExportSize(val maxEdge: Int) { Native(0), FourK(4096), TwoK(2048) }
+private fun rawExportSizeFor(maxEdge: Int): RawExportSize = when (maxEdge) {
+    2048 -> RawExportSize.TwoK
+    4096 -> RawExportSize.FourK
+    else -> RawExportSize.Native
+}
 
 /** Source-only settings. They are rendered before every non-destructive edit operation. */
 private data class RawDevelopState(
@@ -4682,6 +4712,7 @@ private data class StackProjectSummary(
     val title: String,
     val updatedAt: Long,
     val rawDevelop: RawDevelopState? = null,
+    val panorama: Panorama360Metadata? = null,
 )
 
 private data class StackProject(
@@ -4690,6 +4721,7 @@ private data class StackProject(
     val title: String,
     val operations: List<StackOperation>,
     val rawDevelop: RawDevelopState? = null,
+    val panorama: Panorama360Metadata? = null,
 )
 
 private data class StackGestureParameter(
@@ -4720,6 +4752,7 @@ private object StackProjectStore {
         sourceUri: Uri,
         operations: List<StackOperation>,
         rawDevelop: RawDevelopState? = null,
+        panorama: Panorama360Metadata? = null,
     ): Boolean = writeMutex.withLock {
         withContext(Dispatchers.IO) {
             runCatching {
@@ -4765,6 +4798,17 @@ private object StackProjectStore {
                     addProperty("updatedAt", System.currentTimeMillis())
                     addProperty("originalFile", originalName)
                     add("source", rawSourceJson(rawDevelop))
+                    panorama?.let { value ->
+                        add("panorama", JsonObject().apply {
+                            addProperty("fullWidth", value.fullWidth)
+                            addProperty("fullHeight", value.fullHeight)
+                            addProperty("croppedWidth", value.croppedWidth)
+                            addProperty("croppedHeight", value.croppedHeight)
+                            addProperty("croppedLeft", value.croppedLeft)
+                            addProperty("croppedTop", value.croppedTop)
+                            value.initialHeadingDegrees?.let { addProperty("initialHeadingDegrees", it) }
+                        })
+                    }
                     add("operations", serialized)
                 }
                 writeStackText(File(directory, FOSSIN_PROJECT_MANIFEST_FILE), gson.toJson(manifest))
@@ -4804,6 +4848,7 @@ private object StackProjectStore {
             manifest.string("title") ?: original.name,
             operations,
             manifest.rawDevelop(),
+            manifest.panorama(),
         )
     }
 
@@ -4819,6 +4864,7 @@ private object StackProjectStore {
                 title = manifest.string("title") ?: original.name,
                 updatedAt = manifest.long("updatedAt", original.lastModified()),
                 rawDevelop = manifest.rawDevelop(),
+                panorama = manifest.panorama(),
             )
         }?.sortedByDescending(StackProjectSummary::updatedAt)?.toList().orEmpty()
     }
@@ -5047,6 +5093,24 @@ private object StackProjectStore {
             whitePoint = develop.float("whitePoint", 0f).coerceIn(-1f, 1f),
             denoise = develop.float("denoise", 0.2f).coerceIn(0f, 1f),
             sharpening = develop.float("sharpening", 0.12f).coerceIn(0f, 1f),
+        )
+    }
+
+    private fun JsonObject.panorama(): Panorama360Metadata? {
+        val panorama = getAsJsonObject("panorama") ?: return null
+        val fullWidth = panorama.int("fullWidth")
+        val fullHeight = panorama.int("fullHeight")
+        if (fullWidth <= 0 || fullHeight <= 0) return null
+        return Panorama360Metadata(
+            fullWidth = fullWidth,
+            fullHeight = fullHeight,
+            croppedWidth = panorama.int("croppedWidth").takeIf { it > 0 } ?: fullWidth,
+            croppedHeight = panorama.int("croppedHeight").takeIf { it > 0 } ?: fullHeight,
+            croppedLeft = panorama.int("croppedLeft"),
+            croppedTop = panorama.int("croppedTop"),
+            initialHeadingDegrees = panorama.get("initialHeadingDegrees")
+                ?.takeUnless { it.isJsonNull }
+                ?.asFloat,
         )
     }
 
@@ -5493,15 +5557,26 @@ private fun emptyStackMask(bitmap: Bitmap): StackMask {
 }
 
 @Composable
-private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: () -> Unit) {
+private fun FossinStackEditor(
+    initialUri: Uri?,
+    onOpenCamera: () -> Unit,
+    onFinish: () -> Unit,
+    preferences: PhotoEditorPreferences,
+    preferencesRepository: PhotoEditorPreferencesRepository,
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val haptic = LocalHapticFeedback.current
     var showingHall by rememberSaveable { mutableStateOf(initialUri == null) }
     var sourceUri by rememberSaveable { mutableStateOf<Uri?>(initialUri) }
     var source by remember { mutableStateOf<Bitmap?>(null) }
     var rendered by remember { mutableStateOf<Bitmap?>(null) }
+    var panorama by remember { mutableStateOf<Panorama360Metadata?>(null) }
+    var showPanoramaViewer by rememberSaveable { mutableStateOf(false) }
+    var showSettings by rememberSaveable { mutableStateOf(false) }
+    var panoramaGeometryTool by remember { mutableStateOf<StackTool?>(null) }
     var rawDevelop by remember { mutableStateOf<RawDevelopState?>(null) }
-    var rawExportSize by rememberSaveable { mutableStateOf(RawExportSize.Native) }
+    var rawExportSize by rememberSaveable { mutableStateOf(rawExportSizeFor(preferences.rawExportMaxEdge)) }
     var loadedSourceKey by remember { mutableStateOf<String?>(null) }
     var projectId by rememberSaveable { mutableStateOf<String?>(null) }
     var operations by remember { mutableStateOf<List<StackOperation>>(emptyList()) }
@@ -5556,6 +5631,10 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
         redoStack = redoStack.dropLast(1)
     }
     fun beginTool(tool: StackTool, existing: StackOperation? = null, initialState: EditorState = EditorState()) {
+        if (panorama != null && existing == null && tool.isGlobalGeometry) {
+            panoramaGeometryTool = tool
+            return
+        }
         if (tool == StackTool.RawDevelop) {
             val sourceRaw = rawDevelop ?: return
             rawDraft = sourceRaw
@@ -5586,6 +5665,7 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
         draft = null
         editingOperationId = null
         showMask = false
+        if (preferences.hapticsEnabled) haptic.performHapticFeedback(HapticFeedbackType.LongPress)
     }
     fun discardDraft() {
         activeTool = null
@@ -5597,6 +5677,7 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
         rawDraft?.let { rawDevelop = it }
         rawDraft = null
         showRawParameters = false
+        if (preferences.hapticsEnabled) haptic.performHapticFeedback(HapticFeedbackType.LongPress)
     }
     fun discardRawDraft() {
         rawDraft = null
@@ -5613,6 +5694,8 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
             sourceUri = null
             projectId = null
             rawDevelop = null
+            panorama = null
+            showPanoramaViewer = false
             loadedSourceKey = null
             operations = emptyList()
             undoStack = emptyList()
@@ -5627,6 +5710,8 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
             sourceUri = it
             projectId = StackProjectStore.newId()
             rawDevelop = null
+            panorama = null
+            showPanoramaViewer = false
             loadedSourceKey = null
             operations = emptyList()
             undoStack = emptyList()
@@ -5649,6 +5734,8 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
                 sourceUri = project.uri
                 projectId = project.id
                 rawDevelop = project.rawDevelop
+                panorama = project.panorama
+                showPanoramaViewer = false
                 loadedSourceKey = null
                 operations = project.operations
                 undoStack = emptyList()
@@ -5693,12 +5780,12 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
             val exportProjectId = projectId
             val exportSourceUri = sourceUri
             val exportRawDevelop = rawDevelop
-            val exportMaxEdge = if (exportRawDevelop == null) 4096 else rawExportSize.maxEdge
+            val exportMaxEdge = if (exportRawDevelop == null) preferences.exportMaxEdge else rawExportSize.maxEdge
             val mode = exportMode
             scope.launch {
                 isExporting = true
                 if (exportProjectId != null && exportSourceUri != null) {
-                    StackProjectStore.save(context, exportProjectId, exportSourceUri, exportedOperations, exportRawDevelop)
+                    StackProjectStore.save(context, exportProjectId, exportSourceUri, exportedOperations, exportRawDevelop, panorama)
                 }
                 val fullSource = exportSourceUri?.let { sourceToRender ->
                     runCatching {
@@ -5712,9 +5799,19 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
                 val output = fullSource?.let { sourceBitmap -> runCatching {
                     renderMutex.withLock { renderStackBitmap(context, processor, sourceBitmap, exportedOperations) }
                 }.getOrNull() }
-                val saved = output != null && withContext(Dispatchers.IO) {
-                    context.contentResolver.openOutputStream(uri)?.use { output.compress(Bitmap.CompressFormat.JPEG, 96, it) } == true
+                val projection = output?.let { candidate ->
+                    panorama?.takeIf {
+                        candidate.width >= candidate.height * 1.95f &&
+                            exportedOperations.none { operation -> operation.enabled && operation.tool.isGlobalGeometry }
+                    }?.forExport(candidate.width, candidate.height)
                 }
+                val saved = output != null && context.contentResolver.openOutputStream(uri)?.use { stream ->
+                    Panorama360.writeJpeg(
+                        context, output, stream, preferences.jpegQuality, projection,
+                        sourceUri = exportSourceUri,
+                        metadataPolicy = preferences.metadata,
+                    )
+                } == true
                 if (output != null && output !== exportedSource && output !== fullSource && !output.isRecycled) output.recycle()
                 fullSource?.takeIf { it !== exportedSource && !it.isRecycled }?.recycle()
                 isExporting = false
@@ -5743,7 +5840,7 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
             val rawDevelopToSave = rawDevelop
             scope.launch {
                 isExporting = true
-                val saved = StackProjectStore.save(context, id, uriToSave, operationsToSave, rawDevelopToSave)
+                val saved = StackProjectStore.save(context, id, uriToSave, operationsToSave, rawDevelopToSave, panorama)
                 val archived = saved && StackProjectStore.exportArchive(context, id, uri)
                 isExporting = false
                 Toast.makeText(context, if (archived) R.string.fossin_export_package_done else R.string.fossin_export_package_failed, Toast.LENGTH_LONG).show()
@@ -5764,11 +5861,19 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
                 output = renderMutex.withLock { renderStackBitmap(context, processor, fullSource!!, sharedOperations) }
                 val shareDirectory = File(context.cacheDir, "shared").apply { mkdirs() }
                 val shareFile = File(shareDirectory, "photo-editor-${System.currentTimeMillis()}.jpg")
-                withContext(Dispatchers.IO) {
-                    FileOutputStream(shareFile).use { stream ->
-                        check(output!!.compress(Bitmap.CompressFormat.JPEG, 96, stream))
-                    }
+                val projection = output?.let { candidate ->
+                    panorama?.takeIf {
+                        candidate.width >= candidate.height * 1.95f &&
+                            sharedOperations.none { operation -> operation.enabled && operation.tool.isGlobalGeometry }
+                    }?.forExport(candidate.width, candidate.height)
                 }
+                check(FileOutputStream(shareFile).use { stream ->
+                    Panorama360.writeJpeg(
+                        context, output!!, stream, preferences.jpegQuality, projection,
+                        sourceUri = uriToShare,
+                        metadataPolicy = preferences.metadata,
+                    )
+                })
                 val shareUri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", shareFile)
                 context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
                     type = "image/jpeg"
@@ -5829,6 +5934,13 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
             Toast.makeText(context, R.string.fossin_source_open_failed, Toast.LENGTH_LONG).show()
         }
     }
+    LaunchedEffect(sourceUri, source?.width, source?.height) {
+        val uri = sourceUri ?: return@LaunchedEffect
+        val bitmap = source ?: return@LaunchedEffect
+        if (panorama == null && rawDevelop == null) {
+            panorama = Panorama360.detect(context, uri, bitmap.width, bitmap.height)
+        }
+    }
     LaunchedEffect(builtIns, operations) {
         if (builtIns.isEmpty()) return@LaunchedEffect
         val restored = operations.map { operation ->
@@ -5862,12 +5974,12 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
             }
         }
     }
-    LaunchedEffect(projectId, sourceUri, source, operations, rawDevelop) {
+    LaunchedEffect(projectId, sourceUri, source, operations, rawDevelop, panorama) {
         val id = projectId ?: return@LaunchedEffect
         val uri = sourceUri ?: return@LaunchedEffect
         if (source == null) return@LaunchedEffect
         delay(350)
-        StackProjectStore.save(context, id, uri, operations, rawDevelop)
+        StackProjectStore.save(context, id, uri, operations, rawDevelop, panorama)
     }
 
     val visibleOperations = draft?.let { pending ->
@@ -5890,11 +6002,18 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
     }
 
     if (showingHall) {
-        BackHandler { onFinish() }
-        StackEditorHall(
+        BackHandler { if (showSettings) showSettings = false else onFinish() }
+        if (showSettings) {
+            PhotoEditorSettingsScreen(
+                preferences = preferences,
+                preferencesRepository = preferencesRepository,
+                onBack = { showSettings = false },
+            )
+        } else StackEditorHall(
             onImport = { imagePicker.launch(arrayOf("image/*", "application/octet-stream", "*/*")) },
             onImportPackage = { editablePackagePicker.launch(arrayOf("application/zip", "application/octet-stream", "*/*")) },
             onOpenCamera = onOpenCamera,
+            onOpenSettings = { showSettings = true },
             onOpenProject = { summary ->
                 scope.launch {
                     val project = StackProjectStore.load(context, summary.id) ?: return@launch
@@ -5903,6 +6022,8 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
                     sourceUri = project.uri
                     projectId = project.id
                     rawDevelop = project.rawDevelop
+                    panorama = project.panorama
+                    showPanoramaViewer = false
                     loadedSourceKey = null
                     operations = project.operations
                     undoStack = emptyList()
@@ -5916,6 +6037,8 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
                 sourceUri = uri
                 projectId = StackProjectStore.newId()
                 rawDevelop = null
+                panorama = null
+                showPanoramaViewer = false
                 loadedSourceKey = null
                 operations = emptyList()
                 undoStack = emptyList()
@@ -5952,11 +6075,17 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
                 StackTopBar(
                     canUndo = undoStack.isNotEmpty(),
                     canRedo = redoStack.isNotEmpty(),
+                    panoramaAvailable = panorama != null || image?.let { Panorama360.manual(it.width, it.height) } != null,
+                    panoramaEnabled = showPanoramaViewer,
                     onBack = ::leaveEditor,
                     onUndo = ::undo,
                     onRedo = ::redo,
                     onHoldOriginal = { showOriginal = it },
                     onLayers = { showLayers = true },
+                    onTogglePanorama = {
+                        if (panorama == null) image?.let { panorama = Panorama360.manual(it.width, it.height) }
+                        if (panorama != null) showPanoramaViewer = !showPanoramaViewer
+                    },
                 )
                 Box(
                     Modifier
@@ -5966,11 +6095,20 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
                 ) {
                     if (image == null) {
                         EmptyEditor({ imagePicker.launch(arrayOf("image/*", "application/octet-stream", "*/*")) }, onOpenCamera)
+                    } else if (showPanoramaViewer && panorama != null && active == null && rawDraft == null) {
+                        Panorama360Viewer(image, Modifier.fillMaxSize())
+                        Surface(
+                            modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp),
+                            color = Color(0xC9000000),
+                            shape = RoundedCornerShape(16.dp),
+                        ) {
+                            Text("360° · drag to look around · pinch to zoom", color = Color.White, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp))
+                        }
                     } else {
                         val imageModifier = Modifier
                             .fillMaxSize()
-                            .pointerInput(rawDraft != null) {
-                                if (rawDraft == null) return@pointerInput
+                            .pointerInput(rawDraft != null, preferences.gesturesEnabled) {
+                                if (rawDraft == null || !preferences.gesturesEnabled) return@pointerInput
                                 var phase = SnapseedGesturePhase.Pending
                                 var totalHorizontal = 0f
                                 var totalVertical = 0f
@@ -6061,7 +6199,8 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
                                     pickingNeutralPoint = false
                                 })
                             }
-                            .pointerInput(active, showMask) {
+                            .pointerInput(active, showMask, preferences.gesturesEnabled) {
+                                if (!preferences.gesturesEnabled && !showMask) return@pointerInput
                                 if (active != StackTool.LensBlur || showMask) return@pointerInput
                                 awaitEachGesture {
                                     awaitFirstDown(requireUnconsumed = false)
@@ -6301,7 +6440,7 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
                         if (showRawParameters && rawDraft != null) {
                             RawParameterMenu(rawParameters, rawParameterKey) { rawParameterKey = it.key }
                         }
-                        gestureIndicator?.let { indicator -> StackGestureIndicator(indicator) }
+                        if (preferences.touchIndicatorEnabled) gestureIndicator?.let { indicator -> StackGestureIndicator(indicator) }
                         if (active == StackTool.LensBlur && draft != null) {
                             StackLensGuide(draft!!.state, image)
                         }
@@ -6448,6 +6587,20 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
                     onDismiss = { showExportDialog = false },
                 )
             }
+            panoramaGeometryTool?.let { tool ->
+                AlertDialog(
+                    onDismissRequest = { panoramaGeometryTool = null },
+                    title = { Text("Convert 360° photo to a flat image?") },
+                    text = { Text("${stringResource(tool.labelRes)} changes the projection. Continuing keeps the edit stack but removes the 360° projection metadata from future exports.") },
+                    confirmButton = { TextButton(onClick = {
+                        panorama = null
+                        showPanoramaViewer = false
+                        panoramaGeometryTool = null
+                        beginTool(tool)
+                    }) { Text("Convert and continue") } },
+                    dismissButton = { TextButton(onClick = { panoramaGeometryTool = null }) { Text("Keep 360°") } },
+                )
+            }
         }
     }
 }
@@ -6456,11 +6609,14 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
 private fun StackTopBar(
     canUndo: Boolean,
     canRedo: Boolean,
+    panoramaAvailable: Boolean,
+    panoramaEnabled: Boolean,
     onBack: () -> Unit,
     onUndo: () -> Unit,
     onRedo: () -> Unit,
     onHoldOriginal: (Boolean) -> Unit,
     onLayers: () -> Unit,
+    onTogglePanorama: () -> Unit,
 ) {
     Row(
         Modifier
@@ -6487,6 +6643,11 @@ private fun StackTopBar(
                 },
             contentAlignment = Alignment.Center,
         ) { Icon(AppIcons.Visibility, stringResource(R.string.fossin_compare), tint = Color.White) }
+        if (panoramaAvailable) {
+            IconButton(onClick = onTogglePanorama) {
+                Icon(AppIcons.Public, "360 panorama", tint = if (panoramaEnabled) Color(0xFFFFC400) else Color.White)
+            }
+        }
         IconButton(onClick = onLayers) { Icon(AppIcons.PhotoLibrary, stringResource(R.string.fossin_layers), tint = Color.White) }
     }
 }
@@ -7460,6 +7621,7 @@ private fun StackEditorHall(
     onImport: () -> Unit,
     onImportPackage: () -> Unit,
     onOpenCamera: () -> Unit,
+    onOpenSettings: () -> Unit,
     onOpenProject: (StackProjectSummary) -> Unit,
     onOpenCameraPhoto: (Uri) -> Unit,
 ) {
@@ -7502,46 +7664,49 @@ private fun StackEditorHall(
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
-    Surface(Modifier.fillMaxSize(), color = Color(0xFF080809)) {
+    val onSurface = MaterialTheme.colorScheme.onSurface
+    val subdued = MaterialTheme.colorScheme.onSurfaceVariant
+    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(
             Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().verticalScroll(rememberScrollState()).padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text(stringResource(R.string.app_name), color = Color.White, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-                    Text(stringResource(R.string.fossin_library_subtitle), color = Color(0xFFA0A0A8), fontSize = 13.sp)
+                    Text(stringResource(R.string.app_name), color = onSurface, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                    Text(stringResource(R.string.fossin_library_subtitle), color = subdued, fontSize = 13.sp)
                 }
-                IconButton(onClick = { refresh++ }) { Icon(AppIcons.RestartAlt, stringResource(R.string.fossin_library_refresh), tint = Color.White) }
+                IconButton(onClick = { refresh++ }) { Icon(AppIcons.RestartAlt, stringResource(R.string.fossin_library_refresh), tint = onSurface) }
+                IconButton(onClick = onOpenSettings) { Icon(AppIcons.Tune, "Settings", tint = onSurface) }
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Button(onClick = onImport, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF006E51))) { Text(stringResource(R.string.fossin_import)) }
-                TextButton(onClick = onOpenCamera, modifier = Modifier.weight(1f)) { Text(stringResource(R.string.fossin_open_camera), color = Color.White) }
+                TextButton(onClick = onOpenCamera, modifier = Modifier.weight(1f)) { Text(stringResource(R.string.fossin_open_camera), color = onSurface) }
             }
             TextButton(onClick = onImportPackage, modifier = Modifier.align(Alignment.CenterHorizontally)) {
                 Text(stringResource(R.string.fossin_import_editable_package), color = Color(0xFFFFC400), fontSize = 12.sp)
             }
-            Text(stringResource(R.string.fossin_library_imported_edited), color = Color.White, style = MaterialTheme.typography.titleLarge)
+            Text(stringResource(R.string.fossin_library_imported_edited), color = onSurface, style = MaterialTheme.typography.titleLarge)
             if (projects.isEmpty()) {
-                Surface(Modifier.fillMaxWidth().height(110.dp), color = Color(0xFF17171B), shape = RoundedCornerShape(18.dp)) {
-                    Text(stringResource(R.string.fossin_library_imported_empty), color = Color(0xFFA6A6AC), textAlign = TextAlign.Center, modifier = Modifier.padding(20.dp))
+                Surface(Modifier.fillMaxWidth().height(110.dp), color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(18.dp)) {
+                    Text(stringResource(R.string.fossin_library_imported_empty), color = subdued, textAlign = TextAlign.Center, modifier = Modifier.padding(20.dp))
                 }
             } else {
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     items(projects, key = StackProjectSummary::id) { project -> StackProjectCard(project, onOpenProject) }
                 }
             }
-            Text(stringResource(R.string.fossin_library_camera_photos), color = Color.White, style = MaterialTheme.typography.titleLarge)
+            Text(stringResource(R.string.fossin_library_camera_photos), color = onSurface, style = MaterialTheme.typography.titleLarge)
             when {
                 cameraPhotos.isNotEmpty() -> LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     items(cameraPhotos, key = { item -> item.uri.toString() }) { item ->
                         FossinHallPhotoCard(item = item) { onOpenCameraPhoto(item.uri) }
                     }
                 }
-                else -> Surface(Modifier.fillMaxWidth().height(96.dp), color = Color(0xFF17171B), shape = RoundedCornerShape(18.dp)) {
+                else -> Surface(Modifier.fillMaxWidth().height(96.dp), color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(18.dp)) {
                     Text(
                         stringResource(if (isLoading) R.string.fossin_library_loading else R.string.fossin_library_camera_empty),
-                        color = Color(0xFFA6A6AC),
+                        color = subdued,
                         textAlign = TextAlign.Center,
                         modifier = Modifier.padding(20.dp),
                     )
@@ -7552,17 +7717,190 @@ private fun StackEditorHall(
 }
 
 @Composable
+private fun PhotoEditorSettingsScreen(
+    preferences: PhotoEditorPreferences,
+    preferencesRepository: PhotoEditorPreferencesRepository,
+    onBack: () -> Unit,
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var checkingUpdate by remember { mutableStateOf(false) }
+    var clearingData by remember { mutableStateOf(false) }
+    var confirmation by remember { mutableStateOf(false) }
+    val background = MaterialTheme.colorScheme.background
+    val surface = MaterialTheme.colorScheme.surface
+    val text = MaterialTheme.colorScheme.onSurface
+    Surface(Modifier.fillMaxSize(), color = background) {
+        Column(
+            Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().verticalScroll(rememberScrollState()).padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = text) }
+                Text("Settings", style = MaterialTheme.typography.headlineSmall, color = text, fontWeight = FontWeight.Bold)
+            }
+            PhotoEditorSettingsSection("Appearance", surface) {
+                Text("Theme", color = text, fontWeight = FontWeight.SemiBold)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    PhotoEditorThemeMode.values().forEach { mode ->
+                        FilterChip(
+                            selected = preferences.theme == mode,
+                            onClick = { scope.launch { preferencesRepository.update { it.copy(theme = mode) } } },
+                            label = { Text(when (mode) { PhotoEditorThemeMode.System -> "System"; PhotoEditorThemeMode.Light -> "Light"; PhotoEditorThemeMode.Dark -> "Dark" }) },
+                        )
+                    }
+                }
+            }
+            PhotoEditorSettingsSection("Editing", surface) {
+                PhotoEditorToggle("Gesture editing", "Vertical selects and horizontal adjusts", preferences.gesturesEnabled) {
+                    scope.launch { preferencesRepository.update { current -> current.copy(gesturesEnabled = !current.gesturesEnabled) } }
+                }
+                PhotoEditorToggle("Touch indicator", "Show a subtle point while editing", preferences.touchIndicatorEnabled) {
+                    scope.launch { preferencesRepository.update { current -> current.copy(touchIndicatorEnabled = !current.touchIndicatorEnabled) } }
+                }
+                PhotoEditorToggle("Haptic feedback", "Confirm an applied edit with a small vibration", preferences.hapticsEnabled) {
+                    scope.launch { preferencesRepository.update { current -> current.copy(hapticsEnabled = !current.hapticsEnabled) } }
+                }
+            }
+            PhotoEditorSettingsSection("Export", surface) {
+                Text("Image size", color = text, fontWeight = FontWeight.SemiBold)
+                Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                    listOf(0 to "Original", 4096 to "4K", 2048 to "2K").forEach { (edge, label) ->
+                        FilterChip(selected = preferences.exportMaxEdge == edge, onClick = {
+                            scope.launch { preferencesRepository.update { it.copy(exportMaxEdge = edge) } }
+                        }, label = { Text(label) })
+                    }
+                }
+                Text("JPEG quality: ${preferences.jpegQuality}%", color = text, fontWeight = FontWeight.SemiBold)
+                Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                    listOf(90, 95, 96, 100).forEach { quality ->
+                        FilterChip(selected = preferences.jpegQuality == quality, onClick = {
+                            scope.launch { preferencesRepository.update { it.copy(jpegQuality = quality) } }
+                        }, label = { Text("$quality%") })
+                    }
+                }
+                Text("RAW export", color = text, fontWeight = FontWeight.SemiBold)
+                Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                    listOf(0 to "Native", 4096 to "4K", 2048 to "2K").forEach { (edge, label) ->
+                        FilterChip(selected = preferences.rawExportMaxEdge == edge, onClick = {
+                            scope.launch { preferencesRepository.update { it.copy(rawExportMaxEdge = edge) } }
+                        }, label = { Text(label) })
+                    }
+                }
+                Text("Metadata", color = text, fontWeight = FontWeight.SemiBold)
+                Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                    PhotoEditorExportMetadata.values().forEach { mode ->
+                        FilterChip(selected = preferences.metadata == mode, onClick = {
+                            scope.launch { preferencesRepository.update { it.copy(metadata = mode) } }
+                        }, label = { Text(when (mode) {
+                            PhotoEditorExportMetadata.Preserve -> "Preserve"
+                            PhotoEditorExportMetadata.RemoveLocation -> "Remove location"
+                            PhotoEditorExportMetadata.Minimal -> "Minimal"
+                        }) })
+                    }
+                }
+                Text("360° projection data is preserved whenever the export remains a full panorama.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+            }
+            PhotoEditorSettingsSection("Library & privacy", surface) {
+                Text("Projects are private and stay on this device. Photo Editor has no account or analytics.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                TextButton(onClick = { confirmation = true }, enabled = !clearingData) { Text(if (clearingData) "Cleaning…" else "Clear temporary files", color = MaterialTheme.colorScheme.primary) }
+            }
+            PhotoEditorSettingsSection("Updates", surface) {
+                Text("Version ${com.hinnka.mycamera.BuildConfig.VERSION_NAME}", color = text, fontWeight = FontWeight.SemiBold)
+                Text("Checks only the public Photo Editor releases on GitHub. Downloaded APKs are verified against the installed signing certificate.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                Button(
+                    onClick = {
+                        if (checkingUpdate) return@Button
+                        scope.launch {
+                            checkingUpdate = true
+                            try {
+                                val release = AppUpdateManager.checkForUpdate()
+                                if (release == null) {
+                                    Toast.makeText(context, "Photo Editor is up to date", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    Toast.makeText(context, "Downloading ${release.versionName}…", Toast.LENGTH_SHORT).show()
+                                    val apk = AppUpdateManager.downloadApk(context, release)
+                                    if (!AppUpdateManager.startInstall(context, apk)) {
+                                        Toast.makeText(context, "Allow installs from Photo Editor, then try again", Toast.LENGTH_LONG).show()
+                                    }
+                                }
+                            } catch (_: Throwable) {
+                                Toast.makeText(context, "Update check failed. Try again later.", Toast.LENGTH_LONG).show()
+                            } finally {
+                                checkingUpdate = false
+                            }
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF006E51)),
+                ) { Text(if (checkingUpdate) "Checking…" else "Check for updates") }
+            }
+            PhotoEditorSettingsSection("About", surface) {
+                Text("Photo Editor is Free and Open Source Software. It contains no Google Play Services dependency.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+            }
+        }
+    }
+    if (confirmation) {
+        AlertDialog(
+            onDismissRequest = { confirmation = false },
+            title = { Text("Clear temporary files?") },
+            text = { Text("Downloaded updates, temporary RAW files and share copies will be removed. Your originals and editable projects stay intact.") },
+            confirmButton = { TextButton(onClick = {
+                confirmation = false
+                scope.launch {
+                    clearingData = true
+                    preferencesRepository.clearTransientData()
+                    clearingData = false
+                    Toast.makeText(context, "Temporary files cleared", Toast.LENGTH_SHORT).show()
+                }
+            }) { Text("Clear") } },
+            dismissButton = { TextButton(onClick = { confirmation = false }) { Text("Cancel") } },
+        )
+    }
+}
+
+@Composable
+private fun PhotoEditorSettingsSection(title: String, color: Color, content: @Composable () -> Unit) {
+    Column(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(color).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Text(title, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
+        content()
+    }
+}
+
+@Composable
+private fun PhotoEditorToggle(title: String, description: String, selected: Boolean, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(title, color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.SemiBold)
+            Text(description, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+        }
+        FilterChip(selected = selected, onClick = onClick, label = { Text(if (selected) "On" else "Off") })
+    }
+}
+
+@Composable
 private fun StackProjectCard(project: StackProjectSummary, onOpen: (StackProjectSummary) -> Unit) {
     val context = LocalContext.current
     var preview by remember(project.uri) { mutableStateOf<Bitmap?>(null) }
     LaunchedEffect(project.uri) { preview = loadBitmap(context, project.uri, 384) }
     Surface(
         Modifier.width(144.dp).height(184.dp).clip(RoundedCornerShape(18.dp)).clickable { onOpen(project) },
-        color = Color(0xFF1B1B20),
+        color = MaterialTheme.colorScheme.surfaceVariant,
         shape = RoundedCornerShape(18.dp),
     ) {
         Box(Modifier.fillMaxSize()) {
             preview?.let { Image(it.asImageBitmap(), project.title, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) }
+            if (project.panorama != null) {
+                Surface(
+                    color = Color(0xD9000000),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.align(Alignment.TopEnd).padding(8.dp),
+                ) {
+                    Text("360°", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 10.sp, modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp))
+                }
+            }
             Text(project.title, color = Color.White, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.align(Alignment.BottomStart).fillMaxWidth().background(Color(0xB8000000)).padding(10.dp))
         }
     }
