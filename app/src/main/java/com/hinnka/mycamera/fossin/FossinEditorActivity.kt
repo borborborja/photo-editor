@@ -119,6 +119,7 @@ import com.hinnka.mycamera.lut.LutConfig
 import com.hinnka.mycamera.lut.LutImageProcessor
 import com.hinnka.mycamera.lut.LutParser
 import com.hinnka.mycamera.model.ColorRecipeParams
+import com.hinnka.mycamera.raw.RawDemosaicProcessor
 import com.hinnka.mycamera.ui.icons.AppIcons
 import com.hinnka.mycamera.ui.theme.PhotonCameraTheme
 import com.google.gson.GsonBuilder
@@ -139,6 +140,7 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.util.UUID
 import java.util.zip.ZipEntry
+import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 import kotlin.math.roundToInt
 
@@ -409,7 +411,7 @@ internal enum class SnapEffect {
 }
 internal val defaultSnapEffects: Map<SnapEffect, Float> = SnapEffect.values().associateWith { 0f }
 private enum class HslChannel { Red, Orange, Yellow, Green, Cyan, Blue, Purple, Magenta }
-private enum class CurveChannel { Master, Red, Green, Blue }
+private enum class CurveChannel { Master, Red, Green, Blue, Luminance }
 internal data class CurvePoint(val x: Float, val y: Float)
 internal val defaultCurvePoints = listOf(
     CurvePoint(0f, 0f),
@@ -450,7 +452,7 @@ private enum class FrameStyle(val color: Int) {
     Cream(android.graphics.Color.rgb(255, 243, 214)),
 }
 private enum class ExpandStyle { Black, White, Warm, Stretch }
-private enum class LensBlurShape { Radial, Linear }
+private enum class LensBlurShape { Radial, Elliptical, Linear }
 private enum class OverlayBlendMode { Normal, Lighten, Darken, Multiply, Screen, Overlay }
 private enum class TextColor(val argb: Int) {
     White(android.graphics.Color.WHITE),
@@ -569,6 +571,7 @@ private data class EditorState(
     val gradingHighlightLuminance: Float = 0f,
     val gradingBlending: Float = 0.5f,
     val hsl: Map<HslChannel, HslValue> = HslChannel.values().associateWith { HslValue() },
+    val colorHslChannel: HslChannel = HslChannel.Red,
     val curves: Map<CurveChannel, List<CurvePoint>> = defaultCurves,
     val snapEffects: Map<SnapEffect, Float> = defaultSnapEffects,
     val portraitSpotlight: Float = 0f,
@@ -604,6 +607,7 @@ private data class EditorState(
     val lensBlurStrength: Float = 0f,
     val lensBlurTransition: Float = 0.35f,
     val lensBlurAngle: Float = 0f,
+    val lensBlurAspect: Float = 1.45f,
     val lensBlurShape: LensBlurShape = LensBlurShape.Radial,
     val overlayUri: String? = null,
     val overlayAlpha: Float = 0f,
@@ -683,6 +687,7 @@ private val editorStateSaver = Saver<EditorState, Bundle>(
                 val value = state.hsl[channel] ?: HslValue()
                 listOf(value.hue, value.chroma, value.lightness)
             }.toFloatArray())
+            putString("colorHslChannel", state.colorHslChannel.name)
             putFloatArray("curves", CurveChannel.values().flatMap { channel ->
                 (state.curves[channel] ?: defaultCurvePoints).flatMap { point -> listOf(point.x, point.y) }
             }.toFloatArray())
@@ -720,6 +725,7 @@ private val editorStateSaver = Saver<EditorState, Bundle>(
             putFloat("lensBlurStrength", state.lensBlurStrength)
             putFloat("lensBlurTransition", state.lensBlurTransition)
             putFloat("lensBlurAngle", state.lensBlurAngle)
+            putFloat("lensBlurAspect", state.lensBlurAspect)
             putString("lensBlurShape", state.lensBlurShape.name)
             putString("overlayUri", state.overlayUri)
             putFloat("overlayAlpha", state.overlayAlpha)
@@ -822,6 +828,7 @@ private val editorStateSaver = Saver<EditorState, Bundle>(
             gradingHighlightLuminance = bundle.getFloat("gradingHighlightLuminance", 0f),
             gradingBlending = bundle.getFloat("gradingBlending", 0.5f),
             hsl = hsl,
+            colorHslChannel = enumOrDefault(bundle.getString("colorHslChannel"), HslChannel.Red),
             curves = curves,
             snapEffects = snapEffects,
             portraitSpotlight = bundle.getFloat("portraitSpotlight", 0f),
@@ -857,6 +864,7 @@ private val editorStateSaver = Saver<EditorState, Bundle>(
             lensBlurStrength = bundle.getFloat("lensBlurStrength", 0f),
             lensBlurTransition = bundle.getFloat("lensBlurTransition", 0.35f),
             lensBlurAngle = bundle.getFloat("lensBlurAngle", 0f),
+            lensBlurAspect = bundle.getFloat("lensBlurAspect", 1.45f),
             lensBlurShape = enumOrDefault(bundle.getString("lensBlurShape"), LensBlurShape.Radial),
             overlayUri = bundle.getString("overlayUri"),
             overlayAlpha = bundle.getFloat("overlayAlpha", 0f),
@@ -1846,7 +1854,7 @@ private fun FossinEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFinish: (
     if (showingHall) {
         BackHandler { onFinish() }
         FossinHall(
-            onImport = { imagePicker.launch(arrayOf("image/*")) },
+            onImport = { imagePicker.launch(arrayOf("image/*", "application/octet-stream", "*/*")) },
             onOpenCamera = onOpenCamera,
             onOpenPhoto = ::openFromHall,
         )
@@ -3137,6 +3145,7 @@ private fun CurvesPanel(
                         CurveChannel.Red -> stringResource(R.string.fossin_curve_red)
                         CurveChannel.Green -> stringResource(R.string.fossin_curve_green)
                         CurveChannel.Blue -> stringResource(R.string.fossin_curve_blue)
+                        CurveChannel.Luminance -> stringResource(R.string.fossin_curve_luminance)
                     }) }
                 )
             }
@@ -3308,6 +3317,7 @@ private fun LensBlurPanel(state: EditorState, onUpdate: (((EditorState) -> Edito
                     onClick = { onUpdate { it.copy(lensBlurShape = shape) } },
                     label = { Text(text = when (shape) {
                         LensBlurShape.Radial -> stringResource(R.string.fossin_radial)
+                        LensBlurShape.Elliptical -> stringResource(R.string.fossin_elliptical)
                         LensBlurShape.Linear -> stringResource(R.string.fossin_linear)
                     }) }
                 )
@@ -3709,6 +3719,39 @@ internal fun curveArray(points: List<CurvePoint>?): FloatArray? {
     return points.flatMap { listOf(it.x.coerceIn(0f, 1f), it.y.coerceIn(0f, 1f)) }.toFloatArray()
 }
 
+/** Applies the Luminance curve after the GPU's RGB curve pass, preserving chroma and alpha. */
+private fun applyLuminanceCurve(bitmap: Bitmap, points: List<CurvePoint>?): Bitmap {
+    if (curveArray(points) == null) return bitmap
+    val curve = points.orEmpty().sortedBy(CurvePoint::x)
+    if (curve.size < 2) return bitmap
+    fun mapped(value: Float): Float {
+        val clamped = value.coerceIn(0f, 1f)
+        val right = curve.indexOfFirst { it.x >= clamped }.takeIf { it >= 0 } ?: curve.lastIndex
+        val left = (right - 1).coerceAtLeast(0)
+        val a = curve[left]
+        val b = curve[right]
+        val fraction = ((clamped - a.x) / (b.x - a.x).coerceAtLeast(0.0001f)).coerceIn(0f, 1f)
+        return (a.y + (b.y - a.y) * fraction).coerceIn(0f, 1f)
+    }
+    val pixels = IntArray(bitmap.width * bitmap.height)
+    bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+    pixels.indices.forEach { index ->
+        val color = pixels[index]
+        val red = android.graphics.Color.red(color) / 255f
+        val green = android.graphics.Color.green(color) / 255f
+        val blue = android.graphics.Color.blue(color) / 255f
+        val luminance = (red * 0.2126f + green * 0.7152f + blue * 0.0722f).coerceIn(0f, 1f)
+        val scale = if (luminance < 0.0001f) mapped(luminance) else mapped(luminance) / luminance
+        pixels[index] = android.graphics.Color.argb(
+            android.graphics.Color.alpha(color),
+            (red * scale * 255f).roundToInt().coerceIn(0, 255),
+            (green * scale * 255f).roundToInt().coerceIn(0, 255),
+            (blue * scale * 255f).roundToInt().coerceIn(0, 255),
+        )
+    }
+    return Bitmap.createBitmap(pixels, bitmap.width, bitmap.height, Bitmap.Config.ARGB_8888)
+}
+
 private suspend fun renderEditorBitmap(
     processor: LutImageProcessor,
     bitmap: Bitmap,
@@ -3812,6 +3855,13 @@ private suspend fun renderEditorBitmap(
         )
         var current = processed
         output = current
+        val luminanceCurve = state.curves[CurveChannel.Luminance]
+        if (curveArray(luminanceCurve) != null) {
+            val luminanceAdjusted = applyLuminanceCurve(current, luminanceCurve)
+            if (luminanceAdjusted !== current && current !== prepared && current !== bitmap && !current.isRecycled) current.recycle()
+            current = luminanceAdjusted
+            output = current
+        }
         if (state.tonalContrastShadows != 0f || state.tonalContrastMidtones != 0f || state.tonalContrastHighlights != 0f) {
             val tonal = applyTonalContrast(current, state)
             if (tonal !== current && current !== prepared && current !== bitmap && !current.isRecycled) current.recycle()
@@ -4308,10 +4358,12 @@ private fun applyLensBlur(bitmap: Bitmap, state: EditorState): Bitmap {
         val ny = if (height <= 1) 0.5f else y.toFloat() / (height - 1)
         for (x in 0 until width) {
             val nx = if (width <= 1) 0.5f else x.toFloat() / (width - 1)
-            val distance = if (state.lensBlurShape == LensBlurShape.Radial) {
-                kotlin.math.sqrt((nx - state.lensBlurX) * (nx - state.lensBlurX) + (ny - state.lensBlurY) * (ny - state.lensBlurY))
-            } else {
-                kotlin.math.abs((nx - state.lensBlurX) * sinAngle - (ny - state.lensBlurY) * cosAngle)
+            val dx = nx - state.lensBlurX
+            val dy = ny - state.lensBlurY
+            val distance = when (state.lensBlurShape) {
+                LensBlurShape.Radial -> kotlin.math.sqrt(dx * dx + dy * dy)
+                LensBlurShape.Elliptical -> kotlin.math.sqrt((dx * state.lensBlurAspect.coerceIn(0.45f, 2.4f)).let { it * it } + dy * dy)
+                LensBlurShape.Linear -> kotlin.math.abs(dx * sinAngle - dy * cosAngle)
             }
             val weight = ((distance - radius) / transition).coerceIn(0f, 1f) * state.lensBlurStrength
             if (weight <= 0f) continue
@@ -4429,7 +4481,83 @@ private suspend fun loadBitmap(context: android.content.Context, uri: Uri, maxEd
             }
         } else {
             context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
+    }
+}
+
+private data class StackDecodedSource(val bitmap: Bitmap, val rawDevelop: RawDevelopState?)
+
+/**
+ * Raster decoding remains the fast path. If a document cannot be decoded as a bitmap, the
+ * bundled LibRaw reader is asked to develop it instead. This intentionally avoids trusting
+ * extensions and MIME types supplied by Android document providers.
+ */
+private suspend fun loadStackSource(
+    context: android.content.Context,
+    processor: LutImageProcessor,
+    uri: Uri,
+    rawDevelop: RawDevelopState?,
+    maxEdge: Int,
+): StackDecodedSource? {
+    if (rawDevelop == null) {
+        runCatching { loadBitmap(context, uri, maxEdge) }.getOrNull()?.let { bitmap ->
+            return StackDecodedSource(bitmap, null)
         }
+    }
+    val develop = rawDevelop ?: RawDevelopState()
+    val raw = decodeRawStackSource(context, processor, uri, develop, maxEdge) ?: return null
+    return StackDecodedSource(raw, develop)
+}
+
+private suspend fun decodeRawStackSource(
+    context: android.content.Context,
+    processor: LutImageProcessor,
+    uri: Uri,
+    develop: RawDevelopState,
+    maxEdge: Int,
+): Bitmap? {
+    val directFile = uri.takeIf { it.scheme == "file" }?.path?.let(::File)?.takeIf(File::isFile)
+    val staged = directFile ?: withContext(Dispatchers.IO) {
+        val directory = File(context.cacheDir, "fossin-raw-imports").apply { mkdirs() }
+        File(directory, "${UUID.randomUUID()}.${extensionFor(context, uri, "raw")}").also { target ->
+            openUriStream(context, uri)?.use { input -> FileOutputStream(target).use(input::copyTo) }
+                ?: throw FileNotFoundException(uri.toString())
+        }
+    }
+    return try {
+        val rendered = RawDemosaicProcessor.getInstance().process(
+            context = context.applicationContext,
+            dngFilePath = staged.absolutePath,
+            aspectRatio = null,
+            cropRegion = null,
+            rotation = 0,
+            rawExposureCompensation = develop.exposure,
+            rawHighlightsAdjustment = develop.highlights,
+            rawShadowsAdjustment = develop.shadows,
+            rawBlackPointCorrection = develop.blackPoint,
+            rawWhitePointCorrection = develop.whitePoint,
+            rawAutoWhiteBalanceEstimate = develop.whiteBalanceMode == RawWhiteBalanceMode.Auto,
+            sharpeningValue = develop.sharpening,
+            denoiseValue = develop.denoise,
+        ) ?: return null
+        val colorAdjusted = if (develop.whiteBalanceMode == RawWhiteBalanceMode.Manual && (develop.temperature != 0f || develop.tint != 0f)) {
+            runCatching {
+                processor.applyLut(
+                    rendered,
+                    lutConfig = null,
+                    colorRecipeParams = ColorRecipeParams(
+                        temperature = develop.temperature,
+                        tint = develop.tint,
+                    ),
+                )
+            }.getOrElse { rendered }
+        } else rendered
+        if (colorAdjusted !== rendered && !rendered.isRecycled) rendered.recycle()
+        if (maxEdge > 0) scaledPreviewBitmap(colorAdjusted, maxEdge) else colorAdjusted
+    } catch (_: Throwable) {
+        null
+    } finally {
+        if (directFile == null) staged.delete()
+    }
 }
 
 private fun lutDisplayName(context: android.content.Context, uri: Uri): String {
@@ -4455,11 +4583,28 @@ private fun persistReadPermission(context: android.content.Context, uri: Uri) {
  */
 
 private const val FOSSIN_STACK_PROJECTS_DIRECTORY = "fossin-stack-projects"
-private const val FOSSIN_STACK_SCHEMA_VERSION = 2
+private const val FOSSIN_STACK_SCHEMA_VERSION = 3
+private const val FOSSIN_STACK_PREVIOUS_SCHEMA_VERSION = 2
 private const val STACK_MASK_EDGE = 512
 
 private enum class StackEditorTab { Styles, Tools, Export }
 private enum class StackExportMode { KeepProject, PhotoOnly }
+private enum class RawWhiteBalanceMode { AsShot, Auto, Manual }
+private enum class RawExportSize(val maxEdge: Int) { Native(0), FourK(4096), TwoK(2048) }
+
+/** Source-only settings. They are rendered before every non-destructive edit operation. */
+private data class RawDevelopState(
+    val whiteBalanceMode: RawWhiteBalanceMode = RawWhiteBalanceMode.AsShot,
+    val temperature: Float = 0f,
+    val tint: Float = 0f,
+    val exposure: Float = 0f,
+    val highlights: Float = 0f,
+    val shadows: Float = 0f,
+    val blackPoint: Float = 0f,
+    val whitePoint: Float = 0f,
+    val denoise: Float = 0.2f,
+    val sharpening: Float = 0.12f,
+)
 
 private enum class StackToolCategory(@StringRes val labelRes: Int) {
     All(R.string.fossin_tool_category_all),
@@ -4475,6 +4620,7 @@ private enum class StackTool(
     val isNew: Boolean = false,
 ) {
     Looks(R.string.fossin_looks, StackToolCategory.Style),
+    RawDevelop(R.string.fossin_raw_develop, StackToolCategory.Enhance, isNew = true),
     Tune(R.string.fossin_tune, StackToolCategory.Enhance),
     Details(R.string.fossin_details, StackToolCategory.Enhance),
     Dehaze(R.string.fossin_dehaze, StackToolCategory.Enhance, isNew = true),
@@ -4535,6 +4681,7 @@ private data class StackProjectSummary(
     val uri: Uri,
     val title: String,
     val updatedAt: Long,
+    val rawDevelop: RawDevelopState? = null,
 )
 
 private data class StackProject(
@@ -4542,6 +4689,7 @@ private data class StackProject(
     val uri: Uri,
     val title: String,
     val operations: List<StackOperation>,
+    val rawDevelop: RawDevelopState? = null,
 )
 
 private data class StackGestureParameter(
@@ -4550,6 +4698,14 @@ private data class StackGestureParameter(
     val value: Float,
     val range: ClosedFloatingPointRange<Float>,
     val update: (EditorState, Float) -> EditorState,
+)
+
+private data class RawGestureParameter(
+    val key: String,
+    @StringRes val labelRes: Int,
+    val value: Float,
+    val range: ClosedFloatingPointRange<Float>,
+    val update: (RawDevelopState, Float) -> RawDevelopState,
 )
 
 private object StackProjectStore {
@@ -4563,6 +4719,7 @@ private object StackProjectStore {
         projectId: String,
         sourceUri: Uri,
         operations: List<StackOperation>,
+        rawDevelop: RawDevelopState? = null,
     ): Boolean = writeMutex.withLock {
         withContext(Dispatchers.IO) {
             runCatching {
@@ -4604,9 +4761,10 @@ private object StackProjectStore {
                 val manifest = JsonObject().apply {
                     addProperty("schemaVersion", FOSSIN_STACK_SCHEMA_VERSION)
                     addProperty("id", projectId)
-                    addProperty("title", displayName(context, sourceUri))
+                    addProperty("title", existing?.string("title") ?: displayName(context, sourceUri))
                     addProperty("updatedAt", System.currentTimeMillis())
                     addProperty("originalFile", originalName)
+                    add("source", rawSourceJson(rawDevelop))
                     add("operations", serialized)
                 }
                 writeStackText(File(directory, FOSSIN_PROJECT_MANIFEST_FILE), gson.toJson(manifest))
@@ -4618,7 +4776,7 @@ private object StackProjectStore {
     suspend fun load(context: Context, projectId: String): StackProject? = withContext(Dispatchers.IO) {
         val directory = projectDirectory(context, projectId)
         val manifest = readManifest(directory) ?: return@withContext null
-        if (manifest.int("schemaVersion") != FOSSIN_STACK_SCHEMA_VERSION) return@withContext null
+        if (!manifest.isSupportedStackSchema()) return@withContext null
         val original = manifest.string("originalFile")?.let { File(directory, it) }?.takeIf(File::isFile)
             ?: return@withContext null
         val operations = manifest.getAsJsonArray("operations")?.mapNotNull { value ->
@@ -4640,13 +4798,19 @@ private object StackProjectStore {
                 )
             }.getOrNull()
         }.orEmpty()
-        StackProject(projectId, Uri.fromFile(original), manifest.string("title") ?: original.name, operations)
+        StackProject(
+            projectId,
+            Uri.fromFile(original),
+            manifest.string("title") ?: original.name,
+            operations,
+            manifest.rawDevelop(),
+        )
     }
 
     suspend fun list(context: Context): List<StackProjectSummary> = withContext(Dispatchers.IO) {
         root(context).listFiles()?.asSequence()?.filter(File::isDirectory)?.mapNotNull { directory ->
             val manifest = readManifest(directory) ?: return@mapNotNull null
-            if (manifest.int("schemaVersion") != FOSSIN_STACK_SCHEMA_VERSION) return@mapNotNull null
+            if (!manifest.isSupportedStackSchema()) return@mapNotNull null
             val original = manifest.string("originalFile")?.let { File(directory, it) }?.takeIf(File::isFile)
                 ?: return@mapNotNull null
             StackProjectSummary(
@@ -4654,6 +4818,7 @@ private object StackProjectStore {
                 uri = Uri.fromFile(original),
                 title = manifest.string("title") ?: original.name,
                 updatedAt = manifest.long("updatedAt", original.lastModified()),
+                rawDevelop = manifest.rawDevelop(),
             )
         }?.sortedByDescending(StackProjectSummary::updatedAt)?.toList().orEmpty()
     }
@@ -4679,6 +4844,23 @@ private object StackProjectStore {
                     addProperty("assets", "assets/")
                 })
             }
+            portableManifest.getAsJsonArray("operations")?.forEach { value ->
+                val operation = value.asJsonObject
+                val state = operation.string("state")?.let(::decodeBundle)?.let(editorStateSaver::restore)
+                    ?: return@forEach
+                fun portableAsset(uriValue: String?): String? = uriValue?.let { valueToResolve ->
+                    Uri.parse(valueToResolve).path?.let(::File)?.name?.takeIf { name ->
+                        File(directory, "assets/$name").isFile
+                    }?.let { name -> "assets/$name" }
+                }
+                val portableState = state.copy(
+                    lut = null,
+                    lutUri = portableAsset(state.lutUri),
+                    overlayUri = portableAsset(state.overlayUri),
+                )
+                val bundle = with(editorStateSaver) { FossinProjectSaverScope.save(portableState) } ?: return@forEach
+                operation.addProperty("state", encodeBundle(bundle))
+            }
             context.contentResolver.openOutputStream(destination)?.use { output ->
                 ZipOutputStream(output).use { archive ->
                     putStackFile(archive, original, "original/${original.name}")
@@ -4693,6 +4875,62 @@ private object StackProjectStore {
             } ?: return@runCatching false
             true
         }.getOrDefault(false)
+    }
+
+    /** Imports a portable stack package without trusting ZIP paths or persisted source URIs. */
+    suspend fun importArchive(context: Context, source: Uri): StackProject? = writeMutex.withLock {
+        withContext(Dispatchers.IO) {
+            val importedId = newId()
+            val directory = projectDirectory(context, importedId)
+            runCatching {
+                directory.mkdirs()
+                openUriStream(context, source)?.use { stream ->
+                    ZipInputStream(stream).use { archive ->
+                        var entry = archive.nextEntry
+                        while (entry != null) {
+                            val path = entry.name
+                            if (!entry.isDirectory && isSafeStackArchivePath(path)) {
+                                val output = File(directory, path)
+                                output.parentFile?.mkdirs()
+                                FileOutputStream(output).use { archive.copyTo(it) }
+                            }
+                            archive.closeEntry()
+                            entry = archive.nextEntry
+                        }
+                    }
+                } ?: throw FileNotFoundException(source.toString())
+
+                val manifestFile = File(directory, FOSSIN_PROJECT_MANIFEST_FILE)
+                val manifest = runCatching { JsonParser.parseString(manifestFile.readText()).asJsonObject }.getOrNull()
+                    ?: throw IllegalArgumentException("Missing project sidecar")
+                if (!manifest.isSupportedStackSchema()) {
+                    throw IllegalArgumentException("Unsupported project version")
+                }
+                val originalName = manifest.string("originalFile") ?: throw IllegalArgumentException("Missing original")
+                if (!isSafeStackArchivePath(originalName) || !File(directory, originalName).isFile) {
+                    throw IllegalArgumentException("Missing original image")
+                }
+                manifest.addProperty("id", importedId)
+                manifest.getAsJsonArray("operations")?.forEach { value ->
+                    val operation = value.asJsonObject
+                    val state = operation.string("state")?.let(::decodeBundle)?.let(editorStateSaver::restore)
+                        ?: return@forEach
+                    fun resolveAsset(valueToResolve: String?): String? = valueToResolve
+                        ?.takeIf(::isSafeStackArchivePath)
+                        ?.let { relative -> File(directory, relative).takeIf(File::isFile) }
+                        ?.let { file -> Uri.fromFile(file).toString() }
+                    val restored = state.copy(
+                        lut = null,
+                        lutUri = resolveAsset(state.lutUri),
+                        overlayUri = resolveAsset(state.overlayUri),
+                    )
+                    val bundle = with(editorStateSaver) { FossinProjectSaverScope.save(restored) } ?: return@forEach
+                    operation.addProperty("state", encodeBundle(bundle))
+                }
+                writeStackText(manifestFile, gson.toJson(manifest))
+                load(context, importedId) ?: throw IllegalArgumentException("Invalid project")
+            }.onFailure { directory.deleteRecursively() }.getOrNull()
+        }
     }
 
     suspend fun delete(context: Context, projectId: String) = writeMutex.withLock {
@@ -4719,7 +4957,8 @@ private object StackProjectStore {
         val uri = source?.let(Uri::parse) ?: return null
         val name = "$base.${extensionFor(context, uri, fallback)}"
         val destination = File(directory, name)
-        if (!destination.isFile) copyStackUri(context, uri, destination)
+        val alreadyLocal = uri.scheme == "file" && uri.path?.let(::File)?.canonicalFile == destination.canonicalFile
+        if (!alreadyLocal) copyStackUri(context, uri, destination)
         return name
     }
 
@@ -4762,6 +5001,58 @@ private object StackProjectStore {
         archive.closeEntry()
     }
 
+    private fun isSafeStackArchivePath(path: String): Boolean {
+        val normalized = path.replace('\\', '/')
+        val allowed = normalized == FOSSIN_PROJECT_MANIFEST_FILE ||
+            normalized.startsWith("original/") ||
+            normalized.startsWith("assets/") ||
+            normalized.startsWith("masks/")
+        return normalized.isNotBlank() && allowed &&
+            !normalized.startsWith('/') &&
+            !normalized.split('/').any { it == ".." || it.isBlank() }
+    }
+
+    private fun rawSourceJson(rawDevelop: RawDevelopState?): JsonObject = JsonObject().apply {
+        addProperty("kind", if (rawDevelop == null) "raster" else "raw")
+        rawDevelop?.let { raw ->
+            add("develop", JsonObject().apply {
+                addProperty("whiteBalanceMode", raw.whiteBalanceMode.name)
+                addProperty("temperature", raw.temperature)
+                addProperty("tint", raw.tint)
+                addProperty("exposure", raw.exposure)
+                addProperty("highlights", raw.highlights)
+                addProperty("shadows", raw.shadows)
+                addProperty("blackPoint", raw.blackPoint)
+                addProperty("whitePoint", raw.whitePoint)
+                addProperty("denoise", raw.denoise)
+                addProperty("sharpening", raw.sharpening)
+            })
+        }
+    }
+
+    private fun JsonObject.rawDevelop(): RawDevelopState? {
+        val source = getAsJsonObject("source") ?: return null
+        if (source.string("kind") != "raw") return null
+        val develop = source.getAsJsonObject("develop") ?: return RawDevelopState()
+        return RawDevelopState(
+            whiteBalanceMode = develop.string("whiteBalanceMode")
+                ?.let { value -> runCatching { enumValueOf<RawWhiteBalanceMode>(value) }.getOrNull() }
+                ?: RawWhiteBalanceMode.AsShot,
+            temperature = develop.float("temperature", 0f).coerceIn(-1f, 1f),
+            tint = develop.float("tint", 0f).coerceIn(-1f, 1f),
+            exposure = develop.float("exposure", 0f).coerceIn(-4f, 4f),
+            highlights = develop.float("highlights", 0f).coerceIn(-1f, 1f),
+            shadows = develop.float("shadows", 0f).coerceIn(-1f, 1f),
+            blackPoint = develop.float("blackPoint", 0f).coerceIn(-1f, 1f),
+            whitePoint = develop.float("whitePoint", 0f).coerceIn(-1f, 1f),
+            denoise = develop.float("denoise", 0.2f).coerceIn(0f, 1f),
+            sharpening = develop.float("sharpening", 0.12f).coerceIn(0f, 1f),
+        )
+    }
+
+    private fun JsonObject.isSupportedStackSchema(): Boolean =
+        int("schemaVersion") in FOSSIN_STACK_PREVIOUS_SCHEMA_VERSION..FOSSIN_STACK_SCHEMA_VERSION
+
     private fun JsonObject.string(key: String): String? = get(key)?.takeUnless { it.isJsonNull }?.asString
     private fun JsonObject.int(key: String): Int = runCatching { get(key).asInt }.getOrDefault(0)
     private fun JsonObject.long(key: String, fallback: Long): Long = runCatching { get(key).asLong }.getOrDefault(fallback)
@@ -4775,6 +5066,31 @@ private fun Bitmap.use(block: (Bitmap) -> Unit) {
     } finally {
         if (!isRecycled) recycle()
     }
+}
+
+private fun rawDevelopParameters(state: RawDevelopState): List<RawGestureParameter> {
+    fun parameter(
+        key: String,
+        @StringRes labelRes: Int,
+        value: Float,
+        range: ClosedFloatingPointRange<Float>,
+        update: (RawDevelopState, Float) -> RawDevelopState,
+    ) = RawGestureParameter(key, labelRes, value, range, update)
+    return listOf(
+        parameter("raw-temperature", R.string.fossin_temperature, state.temperature, -1f..1f) { raw, value ->
+            raw.copy(whiteBalanceMode = RawWhiteBalanceMode.Manual, temperature = value)
+        },
+        parameter("raw-tint", R.string.fossin_tint, state.tint, -1f..1f) { raw, value ->
+            raw.copy(whiteBalanceMode = RawWhiteBalanceMode.Manual, tint = value)
+        },
+        parameter("raw-exposure", R.string.fossin_brightness, state.exposure, -4f..4f) { raw, value -> raw.copy(exposure = value) },
+        parameter("raw-highlights", R.string.fossin_highlights, state.highlights, -1f..1f) { raw, value -> raw.copy(highlights = value) },
+        parameter("raw-shadows", R.string.fossin_tonal_shadows, state.shadows, -1f..1f) { raw, value -> raw.copy(shadows = value) },
+        parameter("raw-black", R.string.fossin_raw_black_point, state.blackPoint, -1f..1f) { raw, value -> raw.copy(blackPoint = value) },
+        parameter("raw-white", R.string.fossin_raw_white_point, state.whitePoint, -1f..1f) { raw, value -> raw.copy(whitePoint = value) },
+        parameter("raw-denoise", R.string.fossin_raw_denoise, state.denoise, 0f..1f) { raw, value -> raw.copy(denoise = value) },
+        parameter("raw-sharpen", R.string.fossin_sharpening, state.sharpening, 0f..1f) { raw, value -> raw.copy(sharpening = value) },
+    )
 }
 
 private fun stackParameters(tool: StackTool, state: EditorState): List<StackGestureParameter> {
@@ -4791,6 +5107,7 @@ private fun stackParameters(tool: StackTool, state: EditorState): List<StackGest
 
     return when (tool) {
         StackTool.Looks -> listOf(parameter("look-strength", R.string.fossin_strength, state.intensity, 0f..1f) { editor, value -> editor.copy(intensity = value) })
+        StackTool.RawDevelop -> emptyList()
         StackTool.Tune -> listOf(
             parameter("brightness", R.string.fossin_brightness, state.exposure, -2f..2f) { editor, value -> editor.copy(exposure = value) },
             parameter("contrast", R.string.fossin_contrast, state.contrast, 0.5f..1.5f) { editor, value -> editor.copy(contrast = value) },
@@ -4820,11 +5137,22 @@ private fun stackParameters(tool: StackTool, state: EditorState): List<StackGest
             parameter("temperature", R.string.fossin_temperature, state.warmth, -1f..1f) { editor, value -> editor.copy(warmth = value) },
             parameter("tint", R.string.fossin_tint, state.tint, -1f..1f) { editor, value -> editor.copy(tint = value) },
         )
-        StackTool.Color -> listOf(
-            parameter("vibrance", R.string.fossin_vibrance, state.vibrance, -1f..1f) { editor, value -> editor.copy(vibrance = value) },
-            parameter("fade", R.string.fossin_fade, state.fade, 0f..1f) { editor, value -> editor.copy(fade = value) },
-            parameter("saturation", R.string.fossin_saturation, state.saturation, 0f..2f) { editor, value -> editor.copy(saturation = value) },
-        )
+        StackTool.Color -> {
+            val channel = state.colorHslChannel
+            val hsl = state.hsl[channel] ?: HslValue()
+            fun updateHsl(editor: EditorState, transform: (HslValue) -> HslValue): EditorState {
+                val current = editor.hsl[editor.colorHslChannel] ?: HslValue()
+                return editor.copy(hsl = editor.hsl + (editor.colorHslChannel to transform(current)))
+            }
+            listOf(
+                parameter("vibrance", R.string.fossin_vibrance, state.vibrance, -1f..1f) { editor, value -> editor.copy(vibrance = value) },
+                parameter("fade", R.string.fossin_fade, state.fade, 0f..1f) { editor, value -> editor.copy(fade = value) },
+                parameter("saturation", R.string.fossin_saturation, state.saturation, 0f..2f) { editor, value -> editor.copy(saturation = value) },
+                parameter("hsl-hue", R.string.fossin_hue, hsl.hue, -1f..1f) { editor, value -> updateHsl(editor) { it.copy(hue = value) } },
+                parameter("hsl-chroma", R.string.fossin_chroma, hsl.chroma, -1f..1f) { editor, value -> updateHsl(editor) { it.copy(chroma = value) } },
+                parameter("hsl-lightness", R.string.fossin_lightness, hsl.lightness, -1f..1f) { editor, value -> updateHsl(editor) { it.copy(lightness = value) } },
+            )
+        }
         StackTool.ColorGrading -> listOf(
             parameter("shadows", R.string.fossin_grading_shadows, state.gradingShadowLuminance, -1f..1f) { editor, value -> editor.copy(gradingShadowLuminance = value) },
             parameter("midtones", R.string.fossin_grading_midtones, state.gradingMidtoneLuminance, -1f..1f) { editor, value -> editor.copy(gradingMidtoneLuminance = value) },
@@ -4892,38 +5220,106 @@ private suspend fun renderStackBitmap(
 ): Bitmap = withContext(Dispatchers.Default) {
     var current = source
     operations.filter(StackOperation::enabled).forEach { operation ->
-        val overlay = operation.state.overlayUri?.let { value ->
-            runCatching { loadBitmap(context, Uri.parse(value), 2048) }.getOrNull()
-        }
-        val effected = renderEditorBitmap(processor, current, operation.state, overlay)
-        overlay?.takeIf { it !== effected && !it.isRecycled }?.recycle()
-        val next = operation.mask?.takeUnless { operation.tool.isGlobalGeometry }?.let { mask ->
-            blendStackMask(current, effected, mask)
-        } ?: effected
+        val next = renderStackOperation(context, processor, current, operation)
         if (current !== source && current !== next && !current.isRecycled) current.recycle()
-        if (effected !== next && effected !== source && !effected.isRecycled) effected.recycle()
         current = next
     }
     current
 }
 
+private suspend fun renderStackOperation(
+    context: Context,
+    processor: LutImageProcessor,
+    input: Bitmap,
+    operation: StackOperation,
+): Bitmap {
+    val overlay = operation.state.overlayUri?.let { value ->
+        runCatching { loadBitmap(context, Uri.parse(value), 2048) }.getOrNull()
+    }
+    val effected = renderEditorBitmap(processor, input, operation.state, overlay)
+    overlay?.takeIf { it !== effected && !it.isRecycled }?.recycle()
+    // A mask is a property of every operation, including geometry operations.  Geometry may
+    // change the canvas size, so blendStackMask normalises the previous frame to the operation's
+    // output before applying the local alpha rather than silently discarding the user's mask.
+    val output = operation.mask?.let { mask -> blendStackMask(input, effected, mask) } ?: effected
+    if (effected !== output && effected !== input && !effected.isRecycled) effected.recycle()
+    return output
+}
+
+/**
+ * Keeps the unchanged prefix of an edit stack alive while a draft changes. This makes adjusting
+ * the last operation independent of the cost of every previously confirmed operation.
+ */
+private class StackPreviewRenderer(
+    private val context: Context,
+    private val processor: LutImageProcessor,
+) {
+    private data class Frame(val operation: StackOperation, val bitmap: Bitmap)
+
+    private var source: Bitmap? = null
+    private val frames = mutableListOf<Frame>()
+    private val retired = mutableListOf<Bitmap>()
+
+    suspend fun render(input: Bitmap, operations: List<StackOperation>): Bitmap = withContext(Dispatchers.Default) {
+        if (source !== input) {
+            invalidateFrom(0)
+            source = input
+        }
+        val enabled = operations.filter(StackOperation::enabled)
+        var prefix = 0
+        while (prefix < frames.size && prefix < enabled.size && frames[prefix].operation == enabled[prefix]) prefix++
+        invalidateFrom(prefix)
+        var current = if (prefix == 0) input else frames[prefix - 1].bitmap
+        for (index in prefix until enabled.size) {
+            current = renderStackOperation(context, processor, current, enabled[index])
+            frames += Frame(enabled[index], current)
+        }
+        current
+    }
+
+    /** Recycle previous frames only after Compose has switched to the next preview. */
+    fun releaseRetired(keep: Bitmap?) {
+        val iterator = retired.iterator()
+        while (iterator.hasNext()) {
+            val bitmap = iterator.next()
+            if (bitmap !== keep && !bitmap.isRecycled) bitmap.recycle()
+            iterator.remove()
+        }
+    }
+
+    fun close() {
+        frames.forEach { frame -> if (!frame.bitmap.isRecycled) frame.bitmap.recycle() }
+        frames.clear()
+        releaseRetired(null)
+        source = null
+    }
+
+    private fun invalidateFrom(index: Int) {
+        while (frames.size > index) retired += frames.removeAt(frames.lastIndex).bitmap
+    }
+}
+
 private fun blendStackMask(input: Bitmap, effect: Bitmap, mask: StackMask): Bitmap {
-    if (input.width != effect.width || input.height != effect.height) return effect
-    val inPixels = IntArray(input.width * input.height)
+    val normalisedInput = if (input.width == effect.width && input.height == effect.height) input else {
+        Bitmap.createScaledBitmap(input, effect.width, effect.height, true)
+    }
+    val inPixels = IntArray(effect.width * effect.height)
     val effectPixels = IntArray(effect.width * effect.height)
-    input.getPixels(inPixels, 0, input.width, 0, 0, input.width, input.height)
+    normalisedInput.getPixels(inPixels, 0, effect.width, 0, 0, effect.width, effect.height)
     effect.getPixels(effectPixels, 0, effect.width, 0, 0, effect.width, effect.height)
     val output = IntArray(inPixels.size)
-    val featherRadius = (mask.feather.coerceIn(0f, 0.4f) * minOf(mask.width, mask.height)).roundToInt()
+    val softenedMask = softenedStackMask(mask)
     inPixels.indices.forEach { index ->
-        val x = index % input.width
-        val y = index / input.width
-        var alpha = sampleStackMask(mask, x.toFloat() / input.width, y.toFloat() / input.height)
-        if (featherRadius > 0) alpha = smoothStackMask(mask, x.toFloat() / input.width, y.toFloat() / input.height, featherRadius)
+        val x = index % effect.width
+        val y = index / effect.width
+        var alpha = softenedMask?.let { values ->
+            sampleStackMask(values, mask.width, mask.height, x.toFloat() / effect.width, y.toFloat() / effect.height)
+        } ?: sampleStackMask(mask, x.toFloat() / effect.width, y.toFloat() / effect.height)
         if (mask.inverted) alpha = 1f - alpha
         output[index] = blendStackPixel(inPixels[index], effectPixels[index], alpha)
     }
-    return Bitmap.createBitmap(output, input.width, input.height, Bitmap.Config.ARGB_8888)
+    if (normalisedInput !== input && !normalisedInput.isRecycled) normalisedInput.recycle()
+    return Bitmap.createBitmap(output, effect.width, effect.height, Bitmap.Config.ARGB_8888)
 }
 
 private fun blendStackPixel(base: Int, effect: Int, alpha: Float): Int {
@@ -4943,21 +5339,74 @@ private fun sampleStackMask(mask: StackMask, nx: Float, ny: Float): Float {
     return (mask.alpha[y * mask.width + x].toInt() and 0xff) / 255f
 }
 
-private fun smoothStackMask(mask: StackMask, nx: Float, ny: Float, radius: Int): Float {
-    val centerX = (nx.coerceIn(0f, 1f) * (mask.width - 1)).roundToInt()
-    val centerY = (ny.coerceIn(0f, 1f) * (mask.height - 1)).roundToInt()
-    val step = maxOf(1, radius / 3)
-    var total = 0f
-    var count = 0
-    for (y in (centerY - radius)..(centerY + radius) step step) for (x in (centerX - radius)..(centerX + radius) step step) {
-        if (x !in 0 until mask.width || y !in 0 until mask.height) continue
-        total += (mask.alpha[y * mask.width + x].toInt() and 0xff) / 255f
-        count++
-    }
-    return if (count == 0) 0f else total / count
+private fun sampleStackMask(values: FloatArray, width: Int, height: Int, nx: Float, ny: Float): Float {
+    val x = (nx.coerceIn(0f, 1f) * (width - 1)).roundToInt()
+    val y = (ny.coerceIn(0f, 1f) * (height - 1)).roundToInt()
+    return values[y * width + x]
 }
 
-/** Seeded local segmentation for the explicit manual fallback and for refining model output. */
+/** A two-pass box blur is O(mask pixels), unlike the former per-output-pixel neighbourhood scan. */
+private fun softenedStackMask(mask: StackMask): FloatArray? {
+    val radius = (mask.feather.coerceIn(0f, 0.4f) * minOf(mask.width, mask.height)).roundToInt()
+    if (radius <= 0) return null
+    val source = FloatArray(mask.alpha.size) { index -> (mask.alpha[index].toInt() and 0xff) / 255f }
+    val horizontal = FloatArray(source.size)
+    val output = FloatArray(source.size)
+    for (y in 0 until mask.height) {
+        var sum = 0f
+        var count = 0
+        for (x in -radius..radius) {
+            if (x in 0 until mask.width) {
+                sum += source[y * mask.width + x]
+                count++
+            }
+        }
+        for (x in 0 until mask.width) {
+            horizontal[y * mask.width + x] = sum / count.coerceAtLeast(1)
+            val remove = x - radius
+            val add = x + radius + 1
+            if (remove in 0 until mask.width) {
+                sum -= source[y * mask.width + remove]
+                count--
+            }
+            if (add in 0 until mask.width) {
+                sum += source[y * mask.width + add]
+                count++
+            }
+        }
+    }
+    for (x in 0 until mask.width) {
+        var sum = 0f
+        var count = 0
+        for (y in -radius..radius) {
+            if (y in 0 until mask.height) {
+                sum += horizontal[y * mask.width + x]
+                count++
+            }
+        }
+        for (y in 0 until mask.height) {
+            output[y * mask.width + x] = sum / count.coerceAtLeast(1)
+            val remove = y - radius
+            val add = y + radius + 1
+            if (remove in 0 until mask.height) {
+                sum -= horizontal[remove * mask.width + x]
+                count--
+            }
+            if (add in 0 until mask.height) {
+                sum += horizontal[add * mask.width + x]
+                count++
+            }
+        }
+    }
+    return output
+}
+
+/**
+ * Offline, seeded region growing for the quick mask.  It deliberately uses local colour,
+ * texture and luma-edge evidence rather than a cloud/semantic model: a rough stroke stays on
+ * the contiguous object while strong edges stop the selection.  The soft score becomes the
+ * initial antialiased mask and can always be corrected with the advanced brush.
+ */
 private fun seededStackMask(bitmap: Bitmap, point: NormalizedPoint): StackMask {
     val scale = minOf(1f, STACK_MASK_EDGE.toFloat() / maxOf(bitmap.width, bitmap.height))
     val width = (bitmap.width * scale).roundToInt().coerceAtLeast(1)
@@ -4968,10 +5417,36 @@ private fun seededStackMask(bitmap: Bitmap, point: NormalizedPoint): StackMask {
     if (small !== bitmap) small.recycle()
     val startX = (point.x.coerceIn(0f, 1f) * (width - 1)).roundToInt()
     val startY = (point.y.coerceIn(0f, 1f) * (height - 1)).roundToInt()
-    val seed = pixels[startY * width + startX]
-    val seedR = android.graphics.Color.red(seed)
-    val seedG = android.graphics.Color.green(seed)
-    val seedB = android.graphics.Color.blue(seed)
+    val luma = FloatArray(pixels.size) { index ->
+        val color = pixels[index]
+        (android.graphics.Color.red(color) * 0.2126f + android.graphics.Color.green(color) * 0.7152f + android.graphics.Color.blue(color) * 0.0722f) / 255f
+    }
+    val texture = FloatArray(pixels.size) { index ->
+        val x = index % width
+        val y = index / width
+        val right = if (x + 1 < width) luma[index + 1] else luma[index]
+        val below = if (y + 1 < height) luma[index + width] else luma[index]
+        (kotlin.math.abs(luma[index] - right) + kotlin.math.abs(luma[index] - below)) * 0.5f
+    }
+    var seedR = 0f
+    var seedG = 0f
+    var seedB = 0f
+    var seedTexture = 0f
+    var sampleCount = 0
+    for (y in (startY - 2).coerceAtLeast(0)..(startY + 2).coerceAtMost(height - 1)) {
+        for (x in (startX - 2).coerceAtLeast(0)..(startX + 2).coerceAtMost(width - 1)) {
+            val color = pixels[y * width + x]
+            seedR += android.graphics.Color.red(color) / 255f
+            seedG += android.graphics.Color.green(color) / 255f
+            seedB += android.graphics.Color.blue(color) / 255f
+            seedTexture += texture[y * width + x]
+            sampleCount++
+        }
+    }
+    seedR /= sampleCount.coerceAtLeast(1)
+    seedG /= sampleCount.coerceAtLeast(1)
+    seedB /= sampleCount.coerceAtLeast(1)
+    seedTexture /= sampleCount.coerceAtLeast(1)
     val alpha = ByteArray(width * height)
     val visited = BooleanArray(alpha.size)
     val queue = IntArray(alpha.size)
@@ -4979,15 +5454,20 @@ private fun seededStackMask(bitmap: Bitmap, point: NormalizedPoint): StackMask {
     var tail = 0
     queue[tail++] = startY * width + startX
     visited[startY * width + startX] = true
-    val tolerance = 82
+    val colorTolerance = 0.31f
+    val textureTolerance = 0.20f
+    val edgeBarrier = 0.17f
     while (head < tail) {
         val index = queue[head++]
         val color = pixels[index]
-        val distance = kotlin.math.abs(android.graphics.Color.red(color) - seedR) +
-            kotlin.math.abs(android.graphics.Color.green(color) - seedG) +
-            kotlin.math.abs(android.graphics.Color.blue(color) - seedB)
-        if (distance > tolerance) continue
-        alpha[index] = 0xff.toByte()
+        val red = android.graphics.Color.red(color) / 255f
+        val green = android.graphics.Color.green(color) / 255f
+        val blue = android.graphics.Color.blue(color) / 255f
+        val colorDistance = kotlin.math.sqrt(((red - seedR) * (red - seedR) + (green - seedG) * (green - seedG) + (blue - seedB) * (blue - seedB)).toDouble()).toFloat()
+        val textureDistance = kotlin.math.abs(texture[index] - seedTexture)
+        val score = colorDistance / colorTolerance + textureDistance / textureTolerance * 0.45f
+        if (score > 1f) continue
+        alpha[index] = ((1f - score * 0.42f) * 255f).roundToInt().coerceIn(0, 255).toByte()
         val x = index % width
         val y = index / width
         intArrayOf(index - 1, index + 1, index - width, index + width).forEach { neighbor ->
@@ -4995,11 +5475,21 @@ private fun seededStackMask(bitmap: Bitmap, point: NormalizedPoint): StackMask {
             val nx = neighbor % width
             val ny = neighbor / width
             if (kotlin.math.abs(nx - x) + kotlin.math.abs(ny - y) != 1) return@forEach
+            // Do not leak across an abrupt local luma edge. A slight relaxation preserves
+            // subjects with texture while still respecting hard object boundaries.
+            if (kotlin.math.abs(luma[index] - luma[neighbor]) > edgeBarrier + texture[index] * 0.35f) return@forEach
             visited[neighbor] = true
             queue[tail++] = neighbor
         }
     }
     return StackMask(alpha, width, height)
+}
+
+private fun emptyStackMask(bitmap: Bitmap): StackMask {
+    val scale = minOf(1f, STACK_MASK_EDGE.toFloat() / maxOf(bitmap.width, bitmap.height))
+    val width = (bitmap.width * scale).roundToInt().coerceAtLeast(1)
+    val height = (bitmap.height * scale).roundToInt().coerceAtLeast(1)
+    return StackMask(ByteArray(width * height), width, height)
 }
 
 @Composable
@@ -5010,12 +5500,19 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
     var sourceUri by rememberSaveable { mutableStateOf<Uri?>(initialUri) }
     var source by remember { mutableStateOf<Bitmap?>(null) }
     var rendered by remember { mutableStateOf<Bitmap?>(null) }
+    var rawDevelop by remember { mutableStateOf<RawDevelopState?>(null) }
+    var rawExportSize by rememberSaveable { mutableStateOf(RawExportSize.Native) }
+    var loadedSourceKey by remember { mutableStateOf<String?>(null) }
     var projectId by rememberSaveable { mutableStateOf<String?>(null) }
     var operations by remember { mutableStateOf<List<StackOperation>>(emptyList()) }
     var undoStack by remember { mutableStateOf<List<List<StackOperation>>>(emptyList()) }
     var redoStack by remember { mutableStateOf<List<List<StackOperation>>>(emptyList()) }
     var activeTool by remember { mutableStateOf<StackTool?>(null) }
     var draft by remember { mutableStateOf<StackOperation?>(null) }
+    var rawDraft by remember { mutableStateOf<RawDevelopState?>(null) }
+    var rawParameterKey by remember { mutableStateOf<String?>(null) }
+    var showRawParameters by remember { mutableStateOf(false) }
+    var gestureIndicator by remember { mutableStateOf<Offset?>(null) }
     var editingOperationId by remember { mutableStateOf<String?>(null) }
     var activeParameterKey by remember { mutableStateOf<String?>(null) }
     var showParameters by remember { mutableStateOf(false) }
@@ -5023,17 +5520,22 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
     var showLayers by remember { mutableStateOf(false) }
     var showMask by remember { mutableStateOf(false) }
     var maskAddMode by remember { mutableStateOf(true) }
+    var maskAdvancedMode by remember { mutableStateOf(false) }
     var maskOverlayVisible by remember { mutableStateOf(true) }
+    var maskBrushSize by remember { mutableStateOf(0.065f) }
+    var maskBrushHardness by remember { mutableStateOf(0.45f) }
     var pickingNeutralPoint by remember { mutableStateOf(false) }
     var mainTab by remember { mutableStateOf(StackEditorTab.Styles) }
     var showExitDialog by remember { mutableStateOf(false) }
     var showExportDialog by remember { mutableStateOf(false) }
     var exportMode by remember { mutableStateOf(StackExportMode.KeepProject) }
     var isRendering by remember { mutableStateOf(false) }
+    var isLoadingSource by remember { mutableStateOf(false) }
     var isExporting by remember { mutableStateOf(false) }
     var builtIns by remember { mutableStateOf<List<LutChoice>>(emptyList()) }
     val processor = remember { LutImageProcessor(context.applicationContext) }
     val renderMutex = remember { Mutex() }
+    val previewRenderer = remember { StackPreviewRenderer(context.applicationContext, processor) }
 
     fun mutateStack(next: List<StackOperation>) {
         if (next == operations) return
@@ -5054,11 +5556,20 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
         redoStack = redoStack.dropLast(1)
     }
     fun beginTool(tool: StackTool, existing: StackOperation? = null, initialState: EditorState = EditorState()) {
+        if (tool == StackTool.RawDevelop) {
+            val sourceRaw = rawDevelop ?: return
+            rawDraft = sourceRaw
+            rawParameterKey = rawDevelopParameters(sourceRaw).firstOrNull()?.key
+            showRawParameters = false
+            mainTab = StackEditorTab.Tools
+            return
+        }
         activeTool = tool
         draft = existing ?: StackOperation(tool = tool, state = initialState)
         editingOperationId = existing?.id
         activeParameterKey = stackParameters(tool, existing?.state ?: EditorState()).firstOrNull()?.key
         showParameters = false
+        maskAdvancedMode = false
         mainTab = StackEditorTab.Tools
     }
     fun updateDraft(transform: (EditorState) -> EditorState) {
@@ -5082,8 +5593,17 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
         editingOperationId = null
         showMask = false
     }
+    fun commitRawDraft() {
+        rawDraft?.let { rawDevelop = it }
+        rawDraft = null
+        showRawParameters = false
+    }
+    fun discardRawDraft() {
+        rawDraft = null
+        showRawParameters = false
+    }
     fun leaveEditor() {
-        if (draft != null) {
+        if (draft != null || rawDraft != null) {
             showExitDialog = true
             return
         }
@@ -5092,6 +5612,8 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
             rendered = null
             sourceUri = null
             projectId = null
+            rawDevelop = null
+            loadedSourceKey = null
             operations = emptyList()
             undoStack = emptyList()
             redoStack = emptyList()
@@ -5104,11 +5626,36 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
             persistReadPermission(context, it)
             sourceUri = it
             projectId = StackProjectStore.newId()
+            rawDevelop = null
+            loadedSourceKey = null
             operations = emptyList()
             undoStack = emptyList()
             redoStack = emptyList()
             source = null
             showingHall = false
+        }
+    }
+    val editablePackagePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let { selected ->
+            persistReadPermission(context, selected)
+            scope.launch {
+                val project = StackProjectStore.importArchive(context, selected)
+                if (project == null) {
+                    Toast.makeText(context, R.string.fossin_import_package_failed, Toast.LENGTH_LONG).show()
+                    return@launch
+                }
+                source = null
+                rendered = null
+                sourceUri = project.uri
+                projectId = project.id
+                rawDevelop = project.rawDevelop
+                loadedSourceKey = null
+                operations = project.operations
+                undoStack = emptyList()
+                redoStack = emptyList()
+                showingHall = false
+                Toast.makeText(context, R.string.fossin_import_package_done, Toast.LENGTH_SHORT).show()
+            }
         }
     }
     val lutPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -5145,21 +5692,31 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
             val exportedOperations = operations
             val exportProjectId = projectId
             val exportSourceUri = sourceUri
+            val exportRawDevelop = rawDevelop
+            val exportMaxEdge = if (exportRawDevelop == null) 4096 else rawExportSize.maxEdge
             val mode = exportMode
             scope.launch {
                 isExporting = true
                 if (exportProjectId != null && exportSourceUri != null) {
-                    StackProjectStore.save(context, exportProjectId, exportSourceUri, exportedOperations)
+                    StackProjectStore.save(context, exportProjectId, exportSourceUri, exportedOperations, exportRawDevelop)
                 }
-                val fullSource = exportSourceUri?.let { runCatching { loadBitmap(context, it, maxEdge = 4096) }.getOrNull() } ?: exportedSource
-                val output = runCatching {
-                    renderMutex.withLock { renderStackBitmap(context, processor, fullSource, exportedOperations) }
-                }.getOrNull()
+                val fullSource = exportSourceUri?.let { sourceToRender ->
+                    runCatching {
+                        renderMutex.withLock {
+                            loadStackSource(context, processor, sourceToRender, exportRawDevelop, exportMaxEdge)?.bitmap
+                        }
+                    }.getOrNull()
+                } ?: if (exportRawDevelop == null) exportedSource else null
+                // Never silently write a preview-sized substitute when a requested RAW export
+                // cannot be developed at the selected output size.
+                val output = fullSource?.let { sourceBitmap -> runCatching {
+                    renderMutex.withLock { renderStackBitmap(context, processor, sourceBitmap, exportedOperations) }
+                }.getOrNull() }
                 val saved = output != null && withContext(Dispatchers.IO) {
                     context.contentResolver.openOutputStream(uri)?.use { output.compress(Bitmap.CompressFormat.JPEG, 96, it) } == true
                 }
                 if (output != null && output !== exportedSource && output !== fullSource && !output.isRecycled) output.recycle()
-                if (fullSource !== exportedSource && !fullSource.isRecycled) fullSource.recycle()
+                fullSource?.takeIf { it !== exportedSource && !it.isRecycled }?.recycle()
                 isExporting = false
                 Toast.makeText(context, if (saved) R.string.fossin_export_done else R.string.fossin_export_failed, Toast.LENGTH_LONG).show()
                 if (saved && mode == StackExportMode.PhotoOnly && exportProjectId != null) {
@@ -5168,6 +5725,8 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
                     rendered = null
                     sourceUri = null
                     projectId = null
+                    rawDevelop = null
+                    loadedSourceKey = null
                     operations = emptyList()
                     undoStack = emptyList()
                     redoStack = emptyList()
@@ -5181,9 +5740,10 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
             val id = projectId ?: return@let
             val uriToSave = sourceUri ?: return@let
             val operationsToSave = operations
+            val rawDevelopToSave = rawDevelop
             scope.launch {
                 isExporting = true
-                val saved = StackProjectStore.save(context, id, uriToSave, operationsToSave)
+                val saved = StackProjectStore.save(context, id, uriToSave, operationsToSave, rawDevelopToSave)
                 val archived = saved && StackProjectStore.exportArchive(context, id, uri)
                 isExporting = false
                 Toast.makeText(context, if (archived) R.string.fossin_export_package_done else R.string.fossin_export_package_failed, Toast.LENGTH_LONG).show()
@@ -5194,12 +5754,13 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
         val previewSource = source ?: return
         val sharedOperations = operations
         val uriToShare = sourceUri
+        val rawDevelopToShare = rawDevelop
         scope.launch {
             isExporting = true
             var fullSource: Bitmap? = null
             var output: Bitmap? = null
             try {
-                fullSource = uriToShare?.let { loadBitmap(context, it, maxEdge = 4096) } ?: previewSource
+                fullSource = uriToShare?.let { loadStackSource(context, processor, it, rawDevelopToShare, 4096)?.bitmap } ?: previewSource
                 output = renderMutex.withLock { renderStackBitmap(context, processor, fullSource!!, sharedOperations) }
                 val shareDirectory = File(context.cacheDir, "shared").apply { mkdirs() }
                 val shareFile = File(shareDirectory, "photo-editor-${System.currentTimeMillis()}.jpg")
@@ -5224,7 +5785,12 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
         }
     }
 
-    DisposableEffect(processor) { onDispose { processor.release() } }
+    DisposableEffect(processor, previewRenderer) {
+        onDispose {
+            previewRenderer.close()
+            processor.release()
+        }
+    }
     LaunchedEffect(Unit) {
         builtIns = withContext(Dispatchers.IO) {
             LutParser.listAvailableLuts(context).mapNotNull { info ->
@@ -5232,13 +5798,35 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
             }
         }
     }
-    LaunchedEffect(sourceUri) {
+    // RAW source controls are part of the immutable source stage.  A draft is decoded at
+    // preview resolution before it is committed, so horizontal gestures remain live without
+    // flattening the original or adding a temporary stack operation.
+    val sourceDevelop = rawDraft ?: rawDevelop
+    LaunchedEffect(sourceUri, sourceDevelop) {
         val uri = sourceUri ?: return@LaunchedEffect
-        if (source != null) return@LaunchedEffect
-        val bitmap = loadBitmap(context, uri, maxEdge = 1440)
-        if (bitmap != null) {
-            source = bitmap
-            if (projectId == null) projectId = StackProjectStore.newId()
+        val expectedKey = "${uri}:${sourceDevelop}"
+        if (source != null && loadedSourceKey == expectedKey) return@LaunchedEffect
+        // Coalesce a gesture's intermediate RAW values; normal bitmap tools continue to render
+        // immediately through the preview stack below.
+        if (sourceDevelop != null) delay(90)
+        isLoadingSource = true
+        val decoded = try {
+            // LibRaw and the GPU recipe pipeline share renderer resources. Serialising this with
+            // the preview renderer prevents a rapid RAW gesture from starting competing develops;
+            // cancelled, superseded values stop while waiting for the lock.
+            renderMutex.withLock { loadStackSource(context, processor, uri, sourceDevelop, maxEdge = 1440) }
+        } finally {
+            isLoadingSource = false
+        }
+        if (decoded != null) {
+            source = decoded.bitmap
+            if (rawDevelop == null && decoded.rawDevelop != null) rawDevelop = decoded.rawDevelop
+            loadedSourceKey = "${uri}:${decoded.rawDevelop}"
+            if (projectId == null) {
+                projectId = StackProjectStore.newId()
+            }
+        } else if (source == null) {
+            Toast.makeText(context, R.string.fossin_source_open_failed, Toast.LENGTH_LONG).show()
         }
     }
     LaunchedEffect(builtIns, operations) {
@@ -5274,12 +5862,12 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
             }
         }
     }
-    LaunchedEffect(projectId, sourceUri, source, operations) {
+    LaunchedEffect(projectId, sourceUri, source, operations, rawDevelop) {
         val id = projectId ?: return@LaunchedEffect
         val uri = sourceUri ?: return@LaunchedEffect
         if (source == null) return@LaunchedEffect
         delay(350)
-        StackProjectStore.save(context, id, uri, operations)
+        StackProjectStore.save(context, id, uri, operations, rawDevelop)
     }
 
     val visibleOperations = draft?.let { pending ->
@@ -5289,10 +5877,9 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
         val input = source ?: return@LaunchedEffect
         isRendering = true
         try {
-            val next = renderMutex.withLock { renderStackBitmap(context, processor, input, visibleOperations) }
-            val old = rendered
+            val next = renderMutex.withLock { previewRenderer.render(input, visibleOperations) }
             rendered = next
-            if (old != null && old !== input && old !== next && !old.isRecycled) old.recycle()
+            previewRenderer.releaseRetired(next)
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Throwable) {
@@ -5305,7 +5892,8 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
     if (showingHall) {
         BackHandler { onFinish() }
         StackEditorHall(
-            onImport = { imagePicker.launch(arrayOf("image/*")) },
+            onImport = { imagePicker.launch(arrayOf("image/*", "application/octet-stream", "*/*")) },
+            onImportPackage = { editablePackagePicker.launch(arrayOf("application/zip", "application/octet-stream", "*/*")) },
             onOpenCamera = onOpenCamera,
             onOpenProject = { summary ->
                 scope.launch {
@@ -5314,11 +5902,26 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
                     rendered = null
                     sourceUri = project.uri
                     projectId = project.id
+                    rawDevelop = project.rawDevelop
+                    loadedSourceKey = null
                     operations = project.operations
                     undoStack = emptyList()
                     redoStack = emptyList()
                     showingHall = false
                 }
+            },
+            onOpenCameraPhoto = { uri ->
+                source = null
+                rendered = null
+                sourceUri = uri
+                projectId = StackProjectStore.newId()
+                rawDevelop = null
+                loadedSourceKey = null
+                operations = emptyList()
+                undoStack = emptyList()
+                redoStack = emptyList()
+                FossinLibraryStore.record(context, uri, FossinLibraryKind.Imported)
+                showingHall = false
             },
         )
         return
@@ -5329,11 +5932,18 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
     val active = activeTool
     val parameters = draft?.let { operation -> stackParameters(operation.tool, operation.state) }.orEmpty()
     val activeParameter = parameters.firstOrNull { it.key == activeParameterKey } ?: parameters.firstOrNull()
+    val rawParameters = rawDraft?.let(::rawDevelopParameters).orEmpty()
+    val activeRawParameter = rawParameters.firstOrNull { it.key == rawParameterKey } ?: rawParameters.firstOrNull()
     val latestImage by rememberUpdatedState(image)
     val latestSource by rememberUpdatedState(source)
     val latestDraft by rememberUpdatedState(draft)
     val latestParameters by rememberUpdatedState(parameters)
+    val latestRawDraft by rememberUpdatedState(rawDraft)
+    val latestRawParameters by rememberUpdatedState(rawParameters)
     val latestMaskAddMode by rememberUpdatedState(maskAddMode)
+    val latestMaskAdvancedMode by rememberUpdatedState(maskAdvancedMode)
+    val latestMaskBrushSize by rememberUpdatedState(maskBrushSize)
+    val latestMaskBrushHardness by rememberUpdatedState(maskBrushHardness)
     val latestUpdateDraft by rememberUpdatedState(newValue = { transform: (EditorState) -> EditorState -> updateDraft(transform) })
 
     Surface(Modifier.fillMaxSize(), color = Color(0xFF070708)) {
@@ -5355,10 +5965,82 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
                     contentAlignment = Alignment.Center,
                 ) {
                     if (image == null) {
-                        EmptyEditor({ imagePicker.launch(arrayOf("image/*")) }, onOpenCamera)
+                        EmptyEditor({ imagePicker.launch(arrayOf("image/*", "application/octet-stream", "*/*")) }, onOpenCamera)
                     } else {
                         val imageModifier = Modifier
                             .fillMaxSize()
+                            .pointerInput(rawDraft != null) {
+                                if (rawDraft == null) return@pointerInput
+                                var phase = SnapseedGesturePhase.Pending
+                                var totalHorizontal = 0f
+                                var totalVertical = 0f
+                                var horizontalStart = 0f
+                                var startValue = 0f
+                                var adjusting: RawGestureParameter? = null
+                                var startIndex = 0
+                                detectDragGestures(
+                                    onDragStart = { offset ->
+                                        gestureIndicator = offset
+                                        phase = SnapseedGesturePhase.Pending
+                                        totalHorizontal = 0f
+                                        totalVertical = 0f
+                                        horizontalStart = 0f
+                                        adjusting = null
+                                    },
+                                    onDrag = { change, dragAmount ->
+                                        gestureIndicator = change.position
+                                        val current = latestRawParameters
+                                        if (current.isEmpty()) return@detectDragGestures
+                                        totalHorizontal += dragAmount.x
+                                        totalVertical += dragAmount.y
+                                        if (phase == SnapseedGesturePhase.Pending) {
+                                            phase = snapseedInitialGesturePhase(
+                                                totalHorizontal,
+                                                totalVertical,
+                                                GESTURE_TOUCH_SLOP_DP.dp.toPx(),
+                                            )
+                                            if (phase == SnapseedGesturePhase.Selecting) {
+                                                startIndex = current.indexOfFirst { it.key == rawParameterKey }.takeIf { it >= 0 } ?: 0
+                                                rawParameterKey = current[startIndex].key
+                                                showRawParameters = true
+                                            } else if (phase == SnapseedGesturePhase.Adjusting) {
+                                                adjusting = current.firstOrNull { it.key == rawParameterKey } ?: current.first()
+                                                startValue = adjusting?.value ?: 0f
+                                                horizontalStart = totalHorizontal - dragAmount.x
+                                            }
+                                        }
+                                        if (phase == SnapseedGesturePhase.Selecting) {
+                                            val index = snapseedParameterIndexForDrag(
+                                                startIndex,
+                                                current.size,
+                                                totalVertical,
+                                                GESTURE_PARAMETER_STEP_DP.dp.toPx(),
+                                            )
+                                            rawParameterKey = current[index].key
+                                            if (kotlin.math.abs(dragAmount.x) > kotlin.math.abs(dragAmount.y) * 1.35f) {
+                                                adjusting = current[index]
+                                                startValue = current[index].value
+                                                horizontalStart = totalHorizontal
+                                                phase = SnapseedGesturePhase.Adjusting
+                                            }
+                                        }
+                                        if (phase == SnapseedGesturePhase.Adjusting) {
+                                            adjusting?.let { parameter ->
+                                                val value = snapseedAdjustedValue(
+                                                    startValue,
+                                                    parameter.range,
+                                                    totalHorizontal - horizontalStart,
+                                                    GESTURE_FULL_RANGE_DP.dp.toPx(),
+                                                )
+                                                latestRawDraft?.let { raw -> rawDraft = parameter.update(raw, value) }
+                                            }
+                                        }
+                                        change.consume()
+                                    },
+                                    onDragEnd = { showRawParameters = false; gestureIndicator = null },
+                                    onDragCancel = { showRawParameters = false; gestureIndicator = null },
+                                )
+                            }
                             .pointerInput(active, pickingNeutralPoint) {
                                 if (active != StackTool.WhiteBalance || !pickingNeutralPoint) return@pointerInput
                                 detectTapGestures(onTap = { offset ->
@@ -5402,12 +6084,17 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
                                                 val rect = displayedImageRect(size.width.toFloat(), size.height.toFloat(), bitmap)
                                                 val scale = distance / previousDistance.coerceAtLeast(1f)
                                                 val rotation = (angle - previousAngle) / Math.PI.toFloat()
+                                                val ellipseAspect = (
+                                                    kotlin.math.abs(second.x - first.x) /
+                                                        kotlin.math.abs(second.y - first.y).coerceAtLeast(1f)
+                                                    ).coerceIn(0.45f, 2.4f)
                                                 latestUpdateDraft { state ->
                                                     state.copy(
                                                         lensBlurX = (state.lensBlurX + (centroid.x - previous.x) / rect.width).coerceIn(0f, 1f),
                                                         lensBlurY = (state.lensBlurY + (centroid.y - previous.y) / rect.height).coerceIn(0f, 1f),
                                                         lensBlurRadius = (state.lensBlurRadius * scale).coerceIn(0.05f, 1f),
                                                         lensBlurAngle = (state.lensBlurAngle + rotation).coerceIn(-1f, 1f),
+                                                        lensBlurAspect = if (state.lensBlurShape == LensBlurShape.Elliptical) ellipseAspect else state.lensBlurAspect,
                                                     )
                                                 }
                                             }
@@ -5448,15 +6135,24 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
                                     val point = normalized(offset, latestImage ?: sourceBitmap)
                                     val currentMask = mask ?: pending.mask
                                     mask = if (currentMask == null) {
-                                        seededStackMask(sourceBitmap, point)
+                                        if (latestMaskAdvancedMode) {
+                                            paintStackMask(emptyStackMask(sourceBitmap), point, latestMaskAddMode, latestMaskBrushSize, latestMaskBrushHardness)
+                                        } else seededStackMask(sourceBitmap, point)
                                     } else {
-                                        paintStackMask(currentMask, point, latestMaskAddMode)
+                                        paintStackMask(
+                                            currentMask,
+                                            point,
+                                            latestMaskAddMode,
+                                            radiusFraction = latestMaskBrushSize,
+                                            hardness = latestMaskBrushHardness,
+                                        )
                                     }
                                     draft = pending.copy(mask = mask)
                                 }
 
                                 detectDragGestures(
                                     onDragStart = { offset ->
+                                        gestureIndicator = offset
                                         phase = SnapseedGesturePhase.Pending
                                         totalHorizontal = 0f
                                         totalVertical = 0f
@@ -5489,6 +6185,7 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
                                         }
                                     },
                                     onDrag = { change, dragAmount ->
+                                        gestureIndicator = change.position
                                         val bitmap = latestImage
                                         if (showMask && bitmap != null && latestSource != null) {
                                             val previous = lastMaskPoint
@@ -5582,11 +6279,13 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
                                     },
                                     onDragEnd = {
                                         showParameters = false
+                                        gestureIndicator = null
                                         cropStart = null
                                         draggingGuide = false
                                     },
                                     onDragCancel = {
                                         showParameters = false
+                                        gestureIndicator = null
                                         cropStart = null
                                         draggingGuide = false
                                     },
@@ -5599,6 +6298,10 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
                         if (showParameters && active != null) {
                             StackParameterMenu(parameters, activeParameterKey) { activeParameterKey = it.key }
                         }
+                        if (showRawParameters && rawDraft != null) {
+                            RawParameterMenu(rawParameters, rawParameterKey) { rawParameterKey = it.key }
+                        }
+                        gestureIndicator?.let { indicator -> StackGestureIndicator(indicator) }
                         if (active == StackTool.LensBlur && draft != null) {
                             StackLensGuide(draft!!.state, image)
                         }
@@ -5609,9 +6312,17 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
                             StackCropGuide(draft!!.state, image)
                         }
                     }
-                    if (isRendering || isExporting) LinearProgressIndicator(Modifier.align(Alignment.BottomCenter).fillMaxWidth(0.6f))
+                    if (isRendering || isLoadingSource || isExporting) LinearProgressIndicator(Modifier.align(Alignment.BottomCenter).fillMaxWidth(0.6f))
                 }
-                if (active != null && draft != null) {
+                if (rawDraft != null) {
+                    RawDevelopControls(
+                        parameter = activeRawParameter,
+                        state = rawDraft!!,
+                        onCancel = ::discardRawDraft,
+                        onConfirm = ::commitRawDraft,
+                        onWhiteBalanceMode = { mode -> rawDraft = rawDraft?.copy(whiteBalanceMode = mode) },
+                    )
+                } else if (active != null && draft != null) {
                     StackEditControls(
                         tool = active,
                         parameter = activeParameter,
@@ -5626,15 +6337,20 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
                     )
                     if (showMask) {
                         StackMaskControls(
-                            advanced = draft!!.mask != null,
+                            advanced = draft!!.mask != null || maskAdvancedMode,
                             addMode = maskAddMode,
                             overlayVisible = maskOverlayVisible,
                             feather = draft!!.mask?.feather ?: 0.08f,
+                            brushSize = maskBrushSize,
+                            brushHardness = maskBrushHardness,
                             onAdd = { maskAddMode = true },
                             onSubtract = { maskAddMode = false },
+                            onAdvanced = { maskAdvancedMode = true },
                             onInvert = { draft = draft?.let { it.copy(mask = it.mask?.copy(inverted = !it.mask.inverted)) } },
                             onOverlay = { maskOverlayVisible = !maskOverlayVisible },
                             onFeather = { value -> draft = draft?.let { it.copy(mask = it.mask?.copy(feather = value)) } },
+                            onBrushSize = { maskBrushSize = it },
+                            onBrushHardness = { maskBrushHardness = it },
                         )
                     } else {
                         StackToolContext(
@@ -5658,8 +6374,11 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
                             onApplyDesign = { design -> mutateStack(operations + design.map { it.copy(id = UUID.randomUUID().toString(), mask = null) }) },
                             context = context,
                         )
-                        StackEditorTab.Tools -> StackToolGrid { beginTool(it) }
+                        StackEditorTab.Tools -> StackToolGrid(rawAvailable = rawDevelop != null) { beginTool(it) }
                         StackEditorTab.Export -> StackExportPanel(
+                            rawSource = rawDevelop != null,
+                            rawExportSize = rawExportSize,
+                            onRawExportSize = { rawExportSize = it },
                             onExport = { showExportDialog = true },
                             onShare = ::shareEditedImage,
                             onEditablePackage = { archivePicker.launch("photo-editor-editable.zip") },
@@ -5671,7 +6390,9 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
             if (showLayers) {
                 StackLayersSheet(
                     operations = operations,
+                    rawDevelop = rawDevelop,
                     onDismiss = { showLayers = false },
+                    onEditRaw = { showLayers = false; beginTool(StackTool.RawDevelop) },
                     onEdit = { operation -> showLayers = false; beginTool(operation.tool, operation) },
                     onMask = { operation -> showLayers = false; beginTool(operation.tool, operation); showMask = true },
                     onToggle = { id -> mutateStack(operations.map { operation -> if (operation.id == id) operation.copy(enabled = !operation.enabled) else operation }) },
@@ -5687,8 +6408,25 @@ private fun FossinStackEditor(initialUri: Uri?, onOpenCamera: () -> Unit, onFini
                     onDismissRequest = { showExitDialog = false },
                     title = { Text(stringResource(R.string.fossin_pending_title)) },
                     text = { Text(stringResource(R.string.fossin_pending_message)) },
-                    confirmButton = { TextButton(onClick = { showExitDialog = false; commitDraft(); leaveEditor() }) { Text(stringResource(R.string.fossin_apply_all)) } },
-                    dismissButton = { TextButton(onClick = { showExitDialog = false; discardDraft(); leaveEditor() }) { Text(stringResource(R.string.fossin_discard_exit)) } },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            showExitDialog = false
+                            if (rawDraft != null) commitRawDraft() else commitDraft()
+                            leaveEditor()
+                        }) { Text(stringResource(R.string.fossin_apply_all)) }
+                    },
+                    dismissButton = {
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            TextButton(onClick = { showExitDialog = false }) {
+                                Text(stringResource(R.string.fossin_continue_editing))
+                            }
+                            TextButton(onClick = {
+                                showExitDialog = false
+                                if (rawDraft != null) discardRawDraft() else discardDraft()
+                                leaveEditor()
+                            }) { Text(stringResource(R.string.fossin_discard_exit)) }
+                        }
+                    },
                 )
             }
             if (showExportDialog) {
@@ -5777,9 +6515,12 @@ private fun StackMainTab(tab: StackEditorTab, @StringRes label: Int, selected: S
 }
 
 @Composable
-private fun StackToolGrid(onTool: (StackTool) -> Unit) {
+private fun StackToolGrid(rawAvailable: Boolean, onTool: (StackTool) -> Unit) {
     var category by remember { mutableStateOf(StackToolCategory.All) }
-    val visible = StackTool.values().filter { category == StackToolCategory.All || it.category == category }
+    val visible = StackTool.values().filter { tool ->
+        (rawAvailable || tool != StackTool.RawDevelop) &&
+            (category == StackToolCategory.All || tool.category == category)
+    }
     Column(
         Modifier
             .fillMaxWidth()
@@ -5869,7 +6610,14 @@ private fun StackStyleTile(name: String, onClick: () -> Unit) {
 }
 
 @Composable
-private fun StackExportPanel(onExport: () -> Unit, onShare: () -> Unit, onEditablePackage: () -> Unit) {
+private fun StackExportPanel(
+    rawSource: Boolean,
+    rawExportSize: RawExportSize,
+    onRawExportSize: (RawExportSize) -> Unit,
+    onExport: () -> Unit,
+    onShare: () -> Unit,
+    onEditablePackage: () -> Unit,
+) {
     Column(
         Modifier.fillMaxWidth().background(Color(0xFF0B0B0D)).padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(2.dp),
@@ -5877,6 +6625,34 @@ private fun StackExportPanel(onExport: () -> Unit, onShare: () -> Unit, onEditab
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Button(onClick = onExport, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF006E51)), modifier = Modifier.weight(1f)) { Text(stringResource(R.string.fossin_export)) }
             TextButton(onClick = onShare, modifier = Modifier.weight(1f)) { Text(stringResource(R.string.share), color = Color.White) }
+        }
+        if (rawSource) {
+            Text(
+                stringResource(R.string.fossin_raw_export_size),
+                color = Color(0xFFA9A9AE),
+                fontSize = 11.sp,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                RawExportSize.values().forEach { size ->
+                    FilterChip(
+                        selected = rawExportSize == size,
+                        onClick = { onRawExportSize(size) },
+                        label = {
+                            Text(
+                                stringResource(
+                                    when (size) {
+                                        RawExportSize.Native -> R.string.fossin_raw_export_native
+                                        RawExportSize.FourK -> R.string.fossin_raw_export_4k
+                                        RawExportSize.TwoK -> R.string.fossin_raw_export_2k
+                                    },
+                                ),
+                                fontSize = 10.sp,
+                            )
+                        },
+                    )
+                }
+            }
         }
         TextButton(onClick = onEditablePackage, modifier = Modifier.align(Alignment.CenterHorizontally)) {
             Text(stringResource(R.string.fossin_export_editable_package), color = Color(0xFFFFC400), fontSize = 12.sp)
@@ -5889,6 +6665,35 @@ private fun StackParameterMenu(
     parameters: List<StackGestureParameter>,
     selected: String?,
     onSelected: (StackGestureParameter) -> Unit,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(0.92f),
+        color = Color(0xD9000000),
+        shape = RoundedCornerShape(12.dp),
+    ) {
+        Column(Modifier.padding(vertical = 8.dp)) {
+            parameters.forEach { parameter ->
+                val isSelected = parameter.key == selected
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .background(if (isSelected) Color(0xFFFFC400) else Color.Transparent)
+                        .clickable { onSelected(parameter) }
+                        .padding(horizontal = 16.dp, vertical = 7.dp),
+                ) {
+                    Text(stringResource(parameter.labelRes), color = if (isSelected) Color.Black else Color.White, modifier = Modifier.weight(1f))
+                    Text(stackValueText(parameter.value, parameter.range), color = if (isSelected) Color.Black else Color.White)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RawParameterMenu(
+    parameters: List<RawGestureParameter>,
+    selected: String?,
+    onSelected: (RawGestureParameter) -> Unit,
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(0.92f),
@@ -5942,8 +6747,51 @@ private fun StackEditControls(
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
             TextButton(onClick = onCancel) { Text("×", color = Color.White, fontSize = 28.sp) }
             if (tool == StackTool.Tune || tool == StackTool.WhiteBalance || tool == StackTool.Hdr) TextButton(onClick = onAuto) { Text(stringResource(R.string.fossin_auto), color = Color.White) }
-            if (!tool.isGlobalGeometry) TextButton(onClick = onMask) { Text(stringResource(R.string.fossin_mask), color = Color.White) }
+            TextButton(onClick = onMask) { Text(stringResource(R.string.fossin_mask), color = Color.White) }
             TextButton(onClick = onLayers) { Text(stringResource(R.string.fossin_layers), color = Color.White) }
+            TextButton(onClick = onConfirm) { Text("✓", color = Color(0xFFFFC400), fontSize = 25.sp) }
+        }
+    }
+}
+
+@Composable
+private fun RawDevelopControls(
+    parameter: RawGestureParameter?,
+    state: RawDevelopState,
+    onCancel: () -> Unit,
+    onConfirm: () -> Unit,
+    onWhiteBalanceMode: (RawWhiteBalanceMode) -> Unit,
+) {
+    Column(Modifier.fillMaxWidth().background(Color(0xF2070708)).padding(horizontal = 12.dp, vertical = 6.dp)) {
+        Text(stringResource(R.string.fossin_raw_develop), color = Color(0xFFFFC400), fontSize = 12.sp, modifier = Modifier.padding(start = 8.dp))
+        parameter?.let {
+            Text(
+                "${stringResource(it.labelRes)} ${stackValueText(it.value, it.range)}",
+                color = Color.White,
+                fontSize = 13.sp,
+                modifier = Modifier.padding(start = 8.dp, bottom = 3.dp),
+            )
+            StackTickRuler(it.value, it.range)
+        }
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+            TextButton(onClick = onCancel) { Text("×", color = Color.White, fontSize = 28.sp) }
+            Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                RawWhiteBalanceMode.values().forEach { mode ->
+                    TextButton(onClick = { onWhiteBalanceMode(mode) }) {
+                        Text(
+                            stringResource(
+                                when (mode) {
+                                    RawWhiteBalanceMode.AsShot -> R.string.fossin_raw_as_shot
+                                    RawWhiteBalanceMode.Auto -> R.string.fossin_auto
+                                    RawWhiteBalanceMode.Manual -> R.string.fossin_raw_manual
+                                },
+                            ),
+                            color = if (mode == state.whiteBalanceMode) Color(0xFFFFC400) else Color.White,
+                            fontSize = 11.sp,
+                        )
+                    }
+                }
+            }
             TextButton(onClick = onConfirm) { Text("✓", color = Color(0xFFFFC400), fontSize = 25.sp) }
         }
     }
@@ -6004,6 +6852,7 @@ private fun StackToolContext(
                 }
             }
         }
+        StackTool.Color -> StackColorRangePicker(operation.state, onState)
         StackTool.ColorGrading -> StackColorGradingWheels(operation.state, onState)
         StackTool.Curves -> StackCurveEditor(operation.state, previewBitmap, onState)
         StackTool.WhiteBalance -> StackWhiteBalanceContext(onPickNeutral)
@@ -6014,6 +6863,37 @@ private fun StackToolContext(
         StackTool.Text -> StackTextEditor(operation.state, onState)
         StackTool.Frame -> StackFrameChooser(operation.state, onState)
         else -> Unit
+    }
+}
+
+@Composable
+private fun StackColorRangePicker(state: EditorState, onState: ((EditorState) -> EditorState) -> Unit) {
+    fun labelRes(channel: HslChannel): Int = when (channel) {
+        HslChannel.Red -> R.string.recipe_param_red_hue
+        HslChannel.Orange -> R.string.recipe_param_orange_hue
+        HslChannel.Yellow -> R.string.recipe_param_yellow_hue
+        HslChannel.Green -> R.string.recipe_param_green_hue
+        HslChannel.Cyan -> R.string.recipe_param_cyan_hue
+        HslChannel.Blue -> R.string.recipe_param_blue_hue
+        HslChannel.Purple -> R.string.recipe_param_purple_hue
+        HslChannel.Magenta -> R.string.recipe_param_magenta_hue
+    }
+    Column(Modifier.fillMaxWidth().background(Color(0xF2070708)).padding(horizontal = 12.dp, vertical = 4.dp)) {
+        Text(stringResource(R.string.fossin_hsl), color = Color.White, fontSize = 12.sp)
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+            items(HslChannel.values().toList()) { channel ->
+                FilterChip(
+                    selected = state.colorHslChannel == channel,
+                    onClick = { onState { it.copy(colorHslChannel = channel) } },
+                    label = { Text(stringResource(labelRes(channel)).substringBeforeLast(' '), fontSize = 10.sp) },
+                )
+            }
+        }
+        Text(
+            "${stringResource(labelRes(state.colorHslChannel)).substringBeforeLast(' ')} · ${stringResource(R.string.fossin_hue)}, ${stringResource(R.string.fossin_chroma)}, ${stringResource(R.string.fossin_lightness)}",
+            color = Color(0xFFA9A9AE),
+            fontSize = 10.sp,
+        )
     }
 }
 
@@ -6086,7 +6966,24 @@ private fun StackCurveEditor(state: EditorState, bitmap: Bitmap?, onState: ((Edi
     Column(Modifier.fillMaxWidth().background(Color(0xF2070708)).padding(horizontal = 12.dp, vertical = 4.dp)) {
         LazyRow(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
             items(CurveChannel.values().toList()) { item ->
-                FilterChip(selected = item == channel, onClick = { channel = item }, label = { Text(item.name, fontSize = 10.sp) })
+                FilterChip(
+                    selected = item == channel,
+                    onClick = { channel = item },
+                    label = {
+                        Text(
+                            stringResource(
+                                when (item) {
+                                    CurveChannel.Master -> R.string.fossin_curve_rgb
+                                    CurveChannel.Red -> R.string.fossin_curve_red
+                                    CurveChannel.Green -> R.string.fossin_curve_green
+                                    CurveChannel.Blue -> R.string.fossin_curve_blue
+                                    CurveChannel.Luminance -> R.string.fossin_curve_luminance
+                                },
+                            ),
+                            fontSize = 10.sp,
+                        )
+                    },
+                )
             }
         }
         StackHistogramCurve(
@@ -6107,14 +7004,31 @@ private fun StackHistogramCurve(points: List<CurvePoint>, histogram: IntArray, o
             .height(122.dp)
             .clip(RoundedCornerShape(10.dp))
             .background(Color(0xFF18181C))
-            .pointerInput(Unit) {
+            .pointerInput(points) {
                 detectDragGestures(
                     onDragStart = { offset ->
-                        selected = current.indices.minByOrNull { index ->
+                        val nearest = current.indices.minByOrNull { index ->
                             val point = current[index]
                             val dx = offset.x - point.x * size.width
                             val dy = offset.y - (1f - point.y) * size.height
                             dx * dx + dy * dy
+                        }
+                        val nearestDistance = nearest?.let { index ->
+                            val point = current[index]
+                            val dx = offset.x - point.x * size.width
+                            val dy = offset.y - (1f - point.y) * size.height
+                            kotlin.math.sqrt((dx * dx + dy * dy).toDouble()).toFloat()
+                        } ?: Float.MAX_VALUE
+                        if (nearest != null && nearestDistance <= 26.dp.toPx()) {
+                            selected = nearest
+                        } else {
+                            val added = CurvePoint(
+                                (offset.x / size.width).coerceIn(0.02f, 0.98f),
+                                (1f - offset.y / size.height).coerceIn(0f, 1f),
+                            )
+                            val next = (current + added).sortedBy(CurvePoint::x)
+                            selected = next.indexOf(added)
+                            onPoints(next)
                         }
                     },
                     onDrag = { change, _ ->
@@ -6166,7 +7080,22 @@ private fun StackLensShapeRow(state: EditorState, onState: ((EditorState) -> Edi
     Column(Modifier.fillMaxWidth().background(Color(0xF2070708)).padding(horizontal = 12.dp, vertical = 4.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             LensBlurShape.values().forEach { shape ->
-                FilterChip(selected = state.lensBlurShape == shape, onClick = { onState { it.copy(lensBlurShape = shape) } }, label = { Text(stringResource(if (shape == LensBlurShape.Radial) R.string.fossin_radial else R.string.fossin_linear), fontSize = 11.sp) })
+                FilterChip(
+                    selected = state.lensBlurShape == shape,
+                    onClick = { onState { it.copy(lensBlurShape = shape) } },
+                    label = {
+                        Text(
+                            stringResource(
+                                when (shape) {
+                                    LensBlurShape.Radial -> R.string.fossin_radial
+                                    LensBlurShape.Elliptical -> R.string.fossin_elliptical
+                                    LensBlurShape.Linear -> R.string.fossin_linear
+                                },
+                            ),
+                            fontSize = 11.sp,
+                        )
+                    },
+                )
             }
         }
         Text(stringResource(R.string.fossin_lens_blur_gesture_hint), color = Color(0xFFA8A8AF), fontSize = 11.sp)
@@ -6299,11 +7228,16 @@ private fun StackMaskControls(
     addMode: Boolean,
     overlayVisible: Boolean,
     feather: Float,
+    brushSize: Float,
+    brushHardness: Float,
     onAdd: () -> Unit,
     onSubtract: () -> Unit,
+    onAdvanced: () -> Unit,
     onInvert: () -> Unit,
     onOverlay: () -> Unit,
     onFeather: (Float) -> Unit,
+    onBrushSize: (Float) -> Unit,
+    onBrushHardness: (Float) -> Unit,
 ) {
     Column(Modifier.fillMaxWidth().background(Color(0xE8000000)).padding(horizontal = 12.dp, vertical = 4.dp)) {
         Text(stringResource(R.string.fossin_mask_prompt), color = Color.White, fontSize = 12.sp)
@@ -6314,9 +7248,57 @@ private fun StackMaskControls(
                 TextButton(onClick = onInvert) { Text(stringResource(R.string.fossin_mask_invert), color = Color.White, fontSize = 10.sp) }
                 TextButton(onClick = onOverlay) { Text(stringResource(R.string.fossin_mask_overlay), color = if (overlayVisible) Color(0xFFFFC400) else Color.White, fontSize = 10.sp) }
             }
-            Slider(value = feather, onValueChange = onFeather, valueRange = 0f..0.4f, modifier = Modifier.fillMaxWidth())
+            // Mask refinement deliberately keeps the gesture-first editor free of conventional
+            // sliders. These compact controls cycle useful brush settings while the actual mask
+            // is painted directly on the photograph.
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                TextButton(onClick = {
+                    onBrushSize(
+                        when {
+                            brushSize < 0.045f -> 0.065f
+                            brushSize < 0.09f -> 0.12f
+                            else -> 0.035f
+                        },
+                    )
+                }) {
+                    Text(
+                        "${stringResource(R.string.fossin_mask_brush_size)} ${(brushSize * 100).roundToInt()}",
+                        color = Color.White,
+                        fontSize = 10.sp,
+                    )
+                }
+                TextButton(onClick = {
+                    onBrushHardness(
+                        when {
+                            brushHardness < 0.35f -> 0.6f
+                            brushHardness < 0.8f -> 0.9f
+                            else -> 0.2f
+                        },
+                    )
+                }) {
+                    Text(
+                        "${stringResource(R.string.fossin_mask_brush_softness)} ${(100f - brushHardness * 100).roundToInt()}",
+                        color = Color.White,
+                        fontSize = 10.sp,
+                    )
+                }
+                TextButton(onClick = {
+                    onFeather(
+                        when {
+                            feather < 0.06f -> 0.12f
+                            feather < 0.2f -> 0.28f
+                            else -> 0.02f
+                        },
+                    )
+                }) {
+                    Text("Feather ${(feather * 100).roundToInt()}", color = Color.White, fontSize = 10.sp)
+                }
+            }
         } else {
-            Text(stringResource(R.string.fossin_mask_model_missing), color = Color(0xFFA9A9AE), fontSize = 11.sp)
+            Text(stringResource(R.string.fossin_mask_auto_hint), color = Color(0xFFA9A9AE), fontSize = 11.sp)
+            TextButton(onClick = onAdvanced) {
+                Text(stringResource(R.string.fossin_mask_advanced), color = Color(0xFFFFC400), fontSize = 11.sp)
+            }
         }
     }
 }
@@ -6325,6 +7307,13 @@ private fun StackMaskControls(
 private fun BoxScope.StackMaskOverlay(mask: StackMask, bitmap: Bitmap) {
     ComposeCanvas(Modifier.fillMaxSize()) {
         val rect = displayedImageRect(size.width, size.height, bitmap)
+        // Put the subject selection in the foreground without obscuring the photograph. The
+        // unselected region is deliberately less prominent, matching the quick-mask workflow.
+        drawRect(
+            Color.Black.copy(alpha = 0.34f),
+            Offset(rect.left, rect.top),
+            androidx.compose.ui.geometry.Size(rect.width, rect.height),
+        )
         val cols = 48
         val rows = maxOf(1, (cols * rect.height / rect.width).roundToInt())
         for (row in 0 until rows) for (column in 0 until cols) {
@@ -6341,13 +7330,33 @@ private fun BoxScope.StackMaskOverlay(mask: StackMask, bitmap: Bitmap) {
 }
 
 @Composable
+private fun BoxScope.StackGestureIndicator(position: Offset) {
+    ComposeCanvas(Modifier.fillMaxSize()) {
+        drawCircle(Color.White.copy(alpha = 0.18f), radius = 26.dp.toPx(), center = position)
+        drawCircle(Color(0xFFFFC400).copy(alpha = 0.72f), radius = 5.dp.toPx(), center = position)
+    }
+}
+
+@Composable
 private fun BoxScope.StackLensGuide(state: EditorState, bitmap: Bitmap) {
     ComposeCanvas(Modifier.fillMaxSize()) {
         val rect = displayedImageRect(size.width, size.height, bitmap)
         val center = Offset(rect.left + state.lensBlurX * rect.width, rect.top + state.lensBlurY * rect.height)
-        if (state.lensBlurShape == LensBlurShape.Radial) {
+        when (state.lensBlurShape) {
+            LensBlurShape.Radial -> {
             drawCircle(Color(0xFFFFC400), state.lensBlurRadius * minOf(rect.width, rect.height), center, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2f))
-        } else {
+            }
+            LensBlurShape.Elliptical -> {
+                val radius = state.lensBlurRadius * minOf(rect.width, rect.height)
+                val aspect = state.lensBlurAspect.coerceIn(0.45f, 2.4f)
+                drawOval(
+                    Color(0xFFFFC400),
+                    topLeft = Offset(center.x - radius / aspect, center.y - radius),
+                    size = androidx.compose.ui.geometry.Size(radius * 2f / aspect, radius * 2f),
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2f),
+                )
+            }
+            LensBlurShape.Linear -> {
             val length = maxOf(rect.width, rect.height)
             val radians = state.lensBlurAngle * Math.PI.toFloat()
             val delta = Offset(
@@ -6355,6 +7364,7 @@ private fun BoxScope.StackLensGuide(state: EditorState, bitmap: Bitmap) {
                 kotlin.math.sin(radians.toDouble()).toFloat() * length,
             )
             drawLine(Color(0xFFFFC400), center - delta, center + delta, strokeWidth = 2f)
+            }
         }
         drawCircle(Color.White, 5f, center)
     }
@@ -6395,7 +7405,9 @@ private fun BoxScope.StackCropGuide(state: EditorState, bitmap: Bitmap) {
 @Composable
 private fun StackLayersSheet(
     operations: List<StackOperation>,
+    rawDevelop: RawDevelopState?,
     onDismiss: () -> Unit,
+    onEditRaw: () -> Unit,
     onEdit: (StackOperation) -> Unit,
     onMask: (StackOperation) -> Unit,
     onToggle: (String) -> Unit,
@@ -6416,13 +7428,21 @@ private fun StackLayersSheet(
                 Text(stringResource(R.string.fossin_original_layer), color = Color.White, modifier = Modifier.padding(14.dp))
             }
             Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (rawDevelop != null) {
+                    Surface(color = Color(0xFF222227), shape = RoundedCornerShape(14.dp)) {
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text(stringResource(R.string.fossin_raw_develop), color = Color.White, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                            TextButton(onClick = onEditRaw) { Text(stringResource(R.string.fossin_edit), color = Color.White, fontSize = 11.sp) }
+                        }
+                    }
+                }
                 operations.forEach { operation ->
                     Surface(color = Color(0xFF222227), shape = RoundedCornerShape(14.dp)) {
                         Column(Modifier.padding(12.dp)) {
                             Text(stringResource(operation.tool.labelRes), color = Color.White, fontWeight = FontWeight.SemiBold)
                             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 TextButton(onClick = { onEdit(operation) }) { Text(stringResource(R.string.fossin_edit), color = Color.White, fontSize = 11.sp) }
-                                if (!operation.tool.isGlobalGeometry) TextButton(onClick = { onMask(operation) }) { Text(stringResource(R.string.fossin_mask), color = Color.White, fontSize = 11.sp) }
+                                TextButton(onClick = { onMask(operation) }) { Text(stringResource(R.string.fossin_mask), color = Color.White, fontSize = 11.sp) }
                                 TextButton(onClick = { onToggle(operation.id) }) { Text(stringResource(if (operation.enabled) R.string.fossin_disable else R.string.fossin_enable), color = if (operation.enabled) Color.White else Color(0xFFA0A0A8), fontSize = 11.sp) }
                                 TextButton(onClick = { onDelete(operation.id) }) { Text(stringResource(R.string.fossin_delete), color = Color(0xFFFF887B), fontSize = 11.sp) }
                             }
@@ -6438,16 +7458,53 @@ private fun StackLayersSheet(
 @Composable
 private fun StackEditorHall(
     onImport: () -> Unit,
+    onImportPackage: () -> Unit,
     onOpenCamera: () -> Unit,
     onOpenProject: (StackProjectSummary) -> Unit,
+    onOpenCameraPhoto: (Uri) -> Unit,
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     var projects by remember { mutableStateOf<List<StackProjectSummary>>(emptyList()) }
+    var cameraPhotos by remember { mutableStateOf<List<FossinLibraryItem>>(emptyList()) }
+    var isLoading by remember { mutableStateOf(true) }
     var refresh by remember { mutableStateOf(0) }
-    LaunchedEffect(refresh) { projects = StackProjectStore.list(context) }
+    LaunchedEffect(refresh) {
+        isLoading = true
+        val library = withContext(Dispatchers.IO) {
+            val savedProjects = StackProjectStore.list(context)
+            val camera = runCatching {
+                GalleryRepository(context.applicationContext)
+                    .getPhotosSync()
+                    .asSequence()
+                    .filter { it.isImage }
+                    .map { photo ->
+                        FossinLibraryItem(
+                            uri = photo.uri,
+                            kind = FossinLibraryKind.Camera,
+                            timestamp = photo.dateAdded,
+                            name = photo.displayName,
+                        )
+                    }
+                    .take(36)
+                    .toList()
+            }.getOrDefault(emptyList())
+            savedProjects to camera
+        }
+        projects = library.first
+        cameraPhotos = library.second
+        isLoading = false
+    }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) refresh++
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
     Surface(Modifier.fillMaxSize(), color = Color(0xFF080809)) {
         Column(
-            Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(20.dp),
+            Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().verticalScroll(rememberScrollState()).padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -6461,6 +7518,9 @@ private fun StackEditorHall(
                 Button(onClick = onImport, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF006E51))) { Text(stringResource(R.string.fossin_import)) }
                 TextButton(onClick = onOpenCamera, modifier = Modifier.weight(1f)) { Text(stringResource(R.string.fossin_open_camera), color = Color.White) }
             }
+            TextButton(onClick = onImportPackage, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+                Text(stringResource(R.string.fossin_import_editable_package), color = Color(0xFFFFC400), fontSize = 12.sp)
+            }
             Text(stringResource(R.string.fossin_library_imported_edited), color = Color.White, style = MaterialTheme.typography.titleLarge)
             if (projects.isEmpty()) {
                 Surface(Modifier.fillMaxWidth().height(110.dp), color = Color(0xFF17171B), shape = RoundedCornerShape(18.dp)) {
@@ -6469,6 +7529,22 @@ private fun StackEditorHall(
             } else {
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     items(projects, key = StackProjectSummary::id) { project -> StackProjectCard(project, onOpenProject) }
+                }
+            }
+            Text(stringResource(R.string.fossin_library_camera_photos), color = Color.White, style = MaterialTheme.typography.titleLarge)
+            when {
+                cameraPhotos.isNotEmpty() -> LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    items(cameraPhotos, key = { item -> item.uri.toString() }) { item ->
+                        FossinHallPhotoCard(item = item) { onOpenCameraPhoto(item.uri) }
+                    }
+                }
+                else -> Surface(Modifier.fillMaxWidth().height(96.dp), color = Color(0xFF17171B), shape = RoundedCornerShape(18.dp)) {
+                    Text(
+                        stringResource(if (isLoading) R.string.fossin_library_loading else R.string.fossin_library_camera_empty),
+                        color = Color(0xFFA6A6AC),
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(20.dp),
+                    )
                 }
             }
         }
@@ -6562,7 +7638,13 @@ private fun mergeStackMasks(current: StackMask?, next: StackMask, add: Boolean):
 }
 
 /** Soft raster brush used after the automatic seed has created a mask. */
-private fun paintStackMask(mask: StackMask, point: NormalizedPoint, add: Boolean, radiusFraction: Float = 0.065f): StackMask {
+private fun paintStackMask(
+    mask: StackMask,
+    point: NormalizedPoint,
+    add: Boolean,
+    radiusFraction: Float = 0.065f,
+    hardness: Float = 0.45f,
+): StackMask {
     val centerX = point.x.coerceIn(0f, 1f) * (mask.width - 1)
     val centerY = point.y.coerceIn(0f, 1f) * (mask.height - 1)
     val radius = (minOf(mask.width, mask.height) * radiusFraction.coerceIn(0.01f, 0.35f)).coerceAtLeast(1f)
@@ -6574,7 +7656,11 @@ private fun paintStackMask(mask: StackMask, point: NormalizedPoint, add: Boolean
     for (y in top..bottom) for (x in left..right) {
         val distance = kotlin.math.sqrt(((x - centerX) * (x - centerX) + (y - centerY) * (y - centerY)).toDouble()).toFloat()
         if (distance > radius) continue
-        val strength = ((1f - distance / radius) * 255f).roundToInt().coerceIn(0, 255)
+        val innerRadius = radius * hardness.coerceIn(0f, 0.98f)
+        val falloff = if (distance <= innerRadius) 1f else {
+            ((radius - distance) / (radius - innerRadius).coerceAtLeast(0.01f)).coerceIn(0f, 1f)
+        }
+        val strength = (falloff * 255f).roundToInt().coerceIn(0, 255)
         val index = y * mask.width + x
         val previous = output[index].toInt() and 0xff
         output[index] = if (add) maxOf(previous, strength).toByte() else (previous - strength).coerceAtLeast(0).toByte()

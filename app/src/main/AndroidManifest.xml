@@ -57,12 +57,26 @@
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="image/*" />
+                <data android:mimeType="application/octet-stream" />
+                <data android:mimeType="image/x-adobe-dng" />
+                <data android:mimeType="image/x-canon-cr2" />
+                <data android:mimeType="image/x-nikon-nef" />
+                <data android:mimeType="image/x-sony-arw" />
+                <data android:mimeType="image/x-panasonic-rw2" />
+                <data android:mimeType="image/x-fuji-raf" />
             </intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:mimeType="image/*" />
+                <data android:mimeType="application/octet-stream" />
+                <data android:mimeType="image/x-adobe-dng" />
+                <data android:mimeType="image/x-canon-cr2" />
+                <data android:mimeType="image/x-nikon-nef" />
+                <data android:mimeType="image/x-sony-arw" />
+                <data android:mimeType="image/x-panasonic-rw2" />
+                <data android:mimeType="image/x-fuji-raf" />
             </intent-filter>
         </activity>
         <activity
