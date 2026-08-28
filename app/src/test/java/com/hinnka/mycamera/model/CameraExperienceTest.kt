@@ -2,6 +2,7 @@ package com.hinnka.mycamera.model
 
 import org.junit.Assert.assertEquals
 import org.junit.Test
+import com.hinnka.mycamera.video.CaptureMode
 
 class CameraExperienceTest {
 
@@ -37,5 +38,21 @@ class CameraExperienceTest {
     @Test
     fun `beginner zoom retains a valid fallback for uncommon lens ranges`() {
         assertEquals(listOf(2.5f), availableBeginnerZoomStops(2.5f, 4f))
+    }
+
+    @Test
+    fun `beginner exposes photo and video but keeps quick shot in Pro controls`() {
+        assertEquals(
+            setOf(CaptureMode.PHOTO, CaptureMode.VIDEO),
+            supportedCaptureModes(CameraExperience.BEGINNER),
+        )
+        assertEquals(
+            CaptureMode.PHOTO,
+            resolveCaptureModeForExperience(CameraExperience.BEGINNER, CaptureMode.QUICK_SHOT),
+        )
+        assertEquals(
+            CaptureMode.QUICK_SHOT,
+            resolveCaptureModeForExperience(CameraExperience.PRO, CaptureMode.QUICK_SHOT),
+        )
     }
 }

@@ -114,6 +114,16 @@ fun CameraTopSheet(
     videoAudioInputId: String,
     videoAudioInputOptions: List<VideoAudioInputOption>,
     onVideoAudioInputChange: (String) -> Unit,
+    timerSeconds: Int = 0,
+    onTimerToggle: () -> Unit = {},
+    showGrid: Boolean = false,
+    onGridToggle: () -> Unit = {},
+    showHistogram: Boolean = false,
+    onHistogramToggle: () -> Unit = {},
+    useLivePhoto: Boolean = false,
+    onLivePhotoToggle: (Boolean) -> Unit = {},
+    onQuickShotClick: () -> Unit = {},
+    onExitQuickShot: () -> Unit = {},
     quickShotResolution: QuickShotResolutionPreset,
     quickShotCapabilities: QuickShotCapabilities,
     onQuickShotResolutionChange: (QuickShotResolutionPreset) -> Unit,
@@ -171,6 +181,11 @@ fun CameraTopSheet(
     onRawMaxToggle: (Boolean) -> Unit,
     useMultipleExposure: Boolean,
     onMultipleExposureToggle: (Boolean) -> Unit,
+    onManualControlsClick: () -> Unit = {},
+    onLooksClick: () -> Unit = {},
+    onSwitchToBeginner: () -> Unit = {},
+    canSwitchToBeginner: Boolean = false,
+    onDismissRequest: () -> Unit = {},
     contentTopPadding: Dp = CameraTopSheetContentTopPadding,
     modifier: Modifier = Modifier
 ) {
@@ -223,22 +238,56 @@ fun CameraTopSheet(
         )
     }
 
-    AnimatedVisibility(
-        visible = visible,
-        enter = slideInVertically(initialOffsetY = { -it }) + fadeIn(),
-        exit = slideOutVertically(targetOffsetY = { -it }) + fadeOut(),
-        modifier = modifier
-    ) {
+    if (visible) {
+        ModalBottomSheet(
+            onDismissRequest = onDismissRequest,
+            modifier = modifier,
+            containerColor = MaterialTheme.colorScheme.surface,
+            contentColor = MaterialTheme.colorScheme.onSurface,
+            dragHandle = { BottomSheetDefaults.DragHandle() },
+        ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .aspectRatio(1f)
                 .verticalScroll(rememberScrollState())
-                .clip(RoundedCornerShape(bottomStart = 24.dp, bottomEnd = 24.dp))
-                .background(Color.Black.copy(alpha = 0.8f))
-                .padding(top = contentTopPadding, bottom = 0.dp, start = 24.dp, end = 24.dp)
+                .navigationBarsPadding()
+                .padding(top = 8.dp, bottom = 8.dp, start = 20.dp, end = 20.dp)
                 .autoRotate()
         ) {
+            Text(
+                text = "Controls Pro",
+                color = MaterialTheme.colorScheme.onSurface,
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold,
+            )
+            Spacer(Modifier.height(14.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                QuickSettingButton(
+                    title = "Manual",
+                    icon = AppIcons.Tune,
+                    onClick = onManualControlsClick,
+                    modifier = Modifier.weight(1f),
+                )
+                QuickSettingButton(
+                    title = "Aspecte i LUT",
+                    icon = AppIcons.Palette,
+                    onClick = onLooksClick,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            Spacer(Modifier.height(14.dp))
+            if (captureMode == CaptureMode.QUICK_SHOT) {
+                QuickSettingButton(
+                    title = "Tornar a Foto",
+                    icon = AppIcons.CameraAlt,
+                    onClick = onExitQuickShot,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(14.dp))
+            }
             if (captureMode == CaptureMode.PHOTO) {
                 SectionLabel(title = stringResource(R.string.aspect_ratio))
                 Row(
@@ -253,7 +302,7 @@ fun CameraTopSheet(
                                 .height(40.dp)
                                 .clip(RoundedCornerShape(8.dp))
                                 .background(
-                                    if (isSelected) Color(0xFFFF6B35) else Color.White.copy(
+                                    if (isSelected) MaterialTheme.colorScheme.primary else Color.White.copy(
                                         alpha = 0.12f
                                     )
                                 )
@@ -262,7 +311,7 @@ fun CameraTopSheet(
                         ) {
                             Text(
                                 text = ratio.getDisplayName(),
-                                color = if (isSelected) Color.Black else Color.White,
+                                color = if (isSelected) MaterialTheme.colorScheme.onPrimary else Color.White,
                                 fontSize = 11.sp,
                                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
                             )
@@ -271,6 +320,42 @@ fun CameraTopSheet(
                 }
 
                 Spacer(modifier = Modifier.height(16.dp))
+
+                SectionLabel(title = "Captura")
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    QuickSettingValue(
+                        title = "Temporitzador",
+                        value = if (timerSeconds == 0) "No" else "${timerSeconds} s",
+                        onClick = onTimerToggle,
+                        modifier = Modifier.weight(1f),
+                    )
+                    QuickSettingToggle(
+                        title = "Graella",
+                        checked = showGrid,
+                        onCheckedChange = { onGridToggle() },
+                        modifier = Modifier.weight(1f),
+                    )
+                    QuickSettingToggle(
+                        title = "Live Photo",
+                        checked = useLivePhoto,
+                        onCheckedChange = onLivePhotoToggle,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                QuickSettingButton(
+                    title = "Ràpida",
+                    icon = AppIcons.Bolt,
+                    onClick = onQuickShotClick,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -391,7 +476,7 @@ fun CameraTopSheet(
                                 .height(40.dp)
                                 .clip(RoundedCornerShape(8.dp))
                                 .background(
-                                    if (isSelected) Color(0xFFFFD700) else Color.White.copy(
+                                    if (isSelected) MaterialTheme.colorScheme.primary else Color.White.copy(
                                         alpha = 0.12f
                                     )
                                 )
@@ -400,7 +485,7 @@ fun CameraTopSheet(
                         ) {
                             Text(
                                 text = videoAspectRatioLabel(ratio),
-                                color = if (isSelected) Color.Black else Color.White,
+                                color = if (isSelected) MaterialTheme.colorScheme.onPrimary else Color.White,
                                 fontSize = 13.sp,
                                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
                             )
@@ -409,6 +494,15 @@ fun CameraTopSheet(
                 }
 
                 Spacer(modifier = Modifier.height(16.dp))
+
+                QuickSettingToggle(
+                    title = "Graella",
+                    checked = showGrid,
+                    onCheckedChange = { onGridToggle() },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -555,7 +649,7 @@ fun CameraTopSheet(
                                 .height(40.dp)
                                 .clip(RoundedCornerShape(8.dp))
                                 .background(
-                                    if (isSelected) Color(0xFFFF6B35) else Color.White.copy(
+                                    if (isSelected) MaterialTheme.colorScheme.primary else Color.White.copy(
                                         alpha = 0.12f
                                     )
                                 )
@@ -564,7 +658,7 @@ fun CameraTopSheet(
                         ) {
                             Text(
                                 text = ratio.getDisplayName(),
-                                color = if (isSelected) Color.Black else Color.White,
+                                color = if (isSelected) MaterialTheme.colorScheme.onPrimary else Color.White,
                                 fontSize = 11.sp,
                                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
                             )
@@ -609,6 +703,24 @@ fun CameraTopSheet(
                     onPresetManageClick = {
                         handleContentManagementAction(onPresetManageClick)
                     }
+                )
+            }
+
+            Spacer(Modifier.height(12.dp))
+            QuickSettingToggle(
+                title = "Histograma",
+                checked = showHistogram,
+                onCheckedChange = { onHistogramToggle() },
+                modifier = Modifier.fillMaxWidth(),
+            )
+
+            if (canSwitchToBeginner) {
+                Spacer(Modifier.height(12.dp))
+                QuickSettingButton(
+                    title = "Càmera simple",
+                    icon = AppIcons.CameraAlt,
+                    onClick = onSwitchToBeginner,
+                    modifier = Modifier.fillMaxWidth(),
                 )
             }
 
@@ -660,6 +772,7 @@ fun CameraTopSheet(
 
             Spacer(Modifier.weight(1f))
         }
+    }
     }
 
     if (showRawSheet) {
@@ -771,7 +884,7 @@ private fun RawCaptureSwitch(
             onCheckedChange = onCheckedChange,
             colors = SwitchDefaults.colors(
                 checkedThumbColor = Color.White,
-                checkedTrackColor = Color(0xFFFF6B35),
+                checkedTrackColor = MaterialTheme.colorScheme.primary,
                 uncheckedThumbColor = Color.Gray,
                 uncheckedTrackColor = Color.White.copy(alpha = 0.2f),
                 uncheckedBorderColor = Color.Transparent
@@ -793,7 +906,7 @@ private fun RowScope.VideoSettingTile(
             .height(40.dp)
             .clip(RoundedCornerShape(8.dp))
             .background(
-                if (expanded) Color(0xFFFFD700) else Color.White.copy(alpha = 0.14f)
+                if (expanded) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.14f)
             )
             .clickable(onClick = onClick)
             .padding(horizontal = 8.dp, vertical = 4.dp),
@@ -801,7 +914,7 @@ private fun RowScope.VideoSettingTile(
     ) {
         Text(
             text = title,
-            color = if (expanded) Color.Black.copy(alpha = 0.75f) else Color.White.copy(alpha = 0.72f),
+            color = if (expanded) MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.75f) else Color.White.copy(alpha = 0.72f),
             fontSize = 9.sp,
             lineHeight = 12.sp,
             fontWeight = FontWeight.Medium
@@ -809,7 +922,7 @@ private fun RowScope.VideoSettingTile(
         Row(verticalAlignment = Alignment.Bottom) {
             Text(
                 text = summary,
-                color = if (expanded) Color.Black else Color.White,
+                color = if (expanded) MaterialTheme.colorScheme.onPrimary else Color.White,
                 fontSize = 12.sp,
                 lineHeight = 15.sp,
                 fontWeight = FontWeight.Bold,
@@ -818,7 +931,7 @@ private fun RowScope.VideoSettingTile(
             Icon(
                 imageVector = if (expanded) AppIcons.ExpandLess else AppIcons.OpenInFull,
                 contentDescription = null,
-                tint = if (expanded) Color.Black else Color.White.copy(alpha = 0.8f),
+                tint = if (expanded) MaterialTheme.colorScheme.onPrimary else Color.White.copy(alpha = 0.8f),
                 modifier = Modifier.size(12.dp)
             )
         }
@@ -850,7 +963,7 @@ private fun VideoOptionChip(
             .height(36.dp)
             .clip(RoundedCornerShape(8.dp))
             .background(
-                if (selected) Color(0xFFFFD700) else Color.White.copy(alpha = 0.12f)
+                if (selected) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.12f)
             )
             .clickable(onClick = onClick)
             .padding(horizontal = 12.dp),
@@ -858,7 +971,7 @@ private fun VideoOptionChip(
     ) {
         Text(
             text = title,
-            color = if (selected) Color.Black else Color.White,
+            color = if (selected) MaterialTheme.colorScheme.onPrimary else Color.White,
             fontSize = 12.sp,
             fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
         )
@@ -1139,7 +1252,7 @@ fun QuickSettingButton2(
             .height(40.dp)
             .clip(RoundedCornerShape(8.dp))
             .background(
-                if (checked) Color(0xFFFF6B35).copy(alpha = 0.15f) else Color.White.copy(
+                if (checked) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f) else Color.White.copy(
                     alpha = 0.15f
                 )
             )
@@ -1154,14 +1267,14 @@ fun QuickSettingButton2(
         ) {
             Text(
                 text = title,
-                color = if (checked) Color(0xFFFF6B35) else Color.White.copy(alpha = 0.9f),
+                color = if (checked) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.9f),
                 fontSize = 10.sp,
                 fontWeight = if (checked) FontWeight.Bold else FontWeight.Normal,
             )
             Icon(
                 imageVector = AppIcons.ChevronRight,
                 contentDescription = null,
-                tint = if (checked) Color(0xFFFF6B35) else Color.White.copy(alpha = 0.9f),
+                tint = if (checked) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.9f),
                 modifier = Modifier.size(18.dp)
             )
         }
@@ -1182,7 +1295,7 @@ fun QuickSettingToggle(
             .height(40.dp)
             .clip(RoundedCornerShape(8.dp))
             .background(
-                if (checked) Color(0xFFFF6B35).copy(alpha = 0.15f * contentAlpha) else Color.White.copy(
+                if (checked) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f * contentAlpha) else Color.White.copy(
                     alpha = 0.15f
                 )
             )
@@ -1198,7 +1311,7 @@ fun QuickSettingToggle(
             Text(
                 text = title,
                 color = if (checked) {
-                    Color(0xFFFF6B35).copy(alpha = contentAlpha)
+                    MaterialTheme.colorScheme.primary.copy(alpha = contentAlpha)
                 } else {
                     Color.White.copy(alpha = 0.9f * contentAlpha)
                 },
@@ -1215,7 +1328,7 @@ fun QuickSettingToggle(
                     .clip(androidx.compose.foundation.shape.CircleShape)
                     .background(
                         if (checked) {
-                            Color(0xFFFF6B35).copy(alpha = contentAlpha)
+                            MaterialTheme.colorScheme.primary.copy(alpha = contentAlpha)
                         } else {
                             Color.White.copy(alpha = 0.2f * contentAlpha)
                         }

@@ -1,5 +1,7 @@
 package com.hinnka.mycamera.model
 
+import com.hinnka.mycamera.video.CaptureMode
+
 /**
  * The camera surface is deliberately split into two experiences.  Both use the
  * same Camera2 pipeline. The beginner surface deliberately uses its
@@ -21,6 +23,21 @@ fun canChangeCameraExperience(
     isVideoRecording: Boolean,
     isVideoProcessing: Boolean,
 ): Boolean = !isVideoRecording && !isVideoProcessing
+
+/**
+ * Beginner deliberately has a small, familiar mode rail.  Video is now part
+ * of that rail, while Quick Shot remains a Pro capture control instead of a
+ * third always-visible mode.
+ */
+fun supportedCaptureModes(experience: CameraExperience): Set<CaptureMode> = when (experience) {
+    CameraExperience.BEGINNER -> setOf(CaptureMode.PHOTO, CaptureMode.VIDEO)
+    CameraExperience.PRO -> setOf(CaptureMode.PHOTO, CaptureMode.VIDEO, CaptureMode.QUICK_SHOT)
+}
+
+fun resolveCaptureModeForExperience(
+    experience: CameraExperience,
+    requestedMode: CaptureMode,
+): CaptureMode = requestedMode.takeIf { it in supportedCaptureModes(experience) } ?: CaptureMode.PHOTO
 
 /**
  * Returns only the familiar zoom stops that the current lens can genuinely

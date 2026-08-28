@@ -212,6 +212,8 @@ fun CameraScreen(
     onToolboxClick: () -> Unit,
     onPresetEditClick: (String?) -> Unit,
     onPresetManagementClick: () -> Unit,
+    onSwitchToBeginner: () -> Unit,
+    canSwitchToBeginner: Boolean,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -319,6 +321,7 @@ fun CameraScreen(
     // UI State
     var activePanel by remember { mutableStateOf(ActivePanel.NONE) }
     var selectedParameter by remember { mutableStateOf(CameraParameter.EXPOSURE_COMPENSATION) }
+    var showManualControls by remember { mutableStateOf(false) }
     var showVideoParameterRuler by remember { mutableStateOf(false) }
     val isXpan = state.aspectRatio == AspectRatio.XPAN
     val activeBaselineTarget = when {
@@ -776,8 +779,6 @@ fun CameraScreen(
             }
     ) {
 
-        val backgroundPainter = rememberBackgroundPainter(viewModel)
-
         val isVideoMode = state.captureMode == CaptureMode.VIDEO
         val isPhotoStyleMode = state.captureMode != CaptureMode.VIDEO
         LaunchedEffect(isPhotoStyleMode) {
@@ -829,72 +830,46 @@ fun CameraScreen(
         }
 
         val topBar = @Composable {
-            CameraTopBar(
+            PixelCameraTopBar(
                 captureMode = state.captureMode,
-                isRecording = state.videoRecordingState.isRecording,
-                recordingElapsedMs = state.videoRecordingState.elapsedMs,
                 flashMode = state.flashMode,
-                onFlashToggle = {
-                    viewModel.toggleFlash()
+                videoTorchEnabled = state.videoConfig.torchEnabled,
+                isPro = true,
+                rawEnabled = useRaw && state.isRawSupported,
+                lutEnabled = currentLutId != "none",
+                focusLocked = state.isFocusLocked,
+                onFlashClick = {
+                    if (state.captureMode == CaptureMode.VIDEO) {
+                        viewModel.setVideoTorchEnabled(!state.videoConfig.torchEnabled)
+                    } else {
+                        viewModel.toggleFlash()
+                    }
                 },
-                timerSeconds = state.timerSeconds,
-                onTimerToggle = { viewModel.toggleTimer() },
-                showHistogram = viewModel.showHistogram,
-                onHistogramToggle = {
-                    viewModel.saveShowHistogram(!viewModel.showHistogram)
-                },
-                useLivePhoto = useLivePhoto,
-                onLivePhotoToggle = { viewModel.setUseLivePhoto(!state.useLivePhoto) },
-                quickShotConfig = state.quickShotConfig,
-                quickShotCapabilities = state.quickShotCapabilities,
-                onQuickShotResolutionClick = {
-                    cycleQuickShotResolution(state)?.let(viewModel::setQuickShotResolution)
-                },
-                videoConfig = state.videoConfig,
-                videoCapabilities = state.videoCapabilities,
-                onVideoTorchToggle = { viewModel.setVideoTorchEnabled(!state.videoConfig.torchEnabled) },
-                onVideoStabilizationToggle = {
-                    viewModel.cycleVideoStabilizationMode()
-                },
-                onVideoResolutionClick = {
-                    cycleVideoResolution(state)?.let(viewModel::setVideoResolution)
-                },
-                onVideoFpsClick = {
-                    cycleVideoFps(state)?.let(viewModel::setVideoFps)
-                },
-                onSettingsClick = {
+                onControlsClick = {
+                    showManualControls = false
                     activePanel = if (activePanel == ActivePanel.SETTINGS) ActivePanel.NONE else ActivePanel.SETTINGS
                 },
                 modifier = Modifier
                     .padding(top = topSafePadding)
                     .offset(
-                        y = if (isVideoMode && !isOpenGateVideo) {
-                            VideoTopBarLoweredOffset
-                        } else {
-                            0.dp
-                        }
-                    )
+                        y = if (isVideoMode && !isOpenGateVideo) VideoTopBarLoweredOffset else 0.dp
+                    ),
             )
         }
 
         val zoomBar = @Composable {
             if (activePanel == ActivePanel.NONE && !isXpan) {
-                ZoomControlBar(
-                    viewModel = viewModel,
+                val activeCamera = state.getCurrentCameraInfo()
+                val intrinsicZoom = activeCamera?.displayIntrinsicZoomRatio?.takeIf { it > 0f } ?: 1f
+                PixelCameraZoomPill(
                     zoomRatio = viewModel.zoomRatioByMain,
-                    availableCameras = state.availableCameras,
-                    currentCameraId = state.getCurrentCameraInfo()?.cameraId ?: "0",
-                    onZoomChange = { setZoomWithPreviewTransition(it) },
-                    onZoomStopClick = { animateZoomStopWithPreviewTransition(it) },
-                    onLensSwitch = { lensId -> switchToLensWithPreviewTransition(lensId) },
-                    onFilterClick = {
-                        activePanel = if (activePanel == ActivePanel.FILTERS) ActivePanel.NONE else ActivePanel.FILTERS
-                    },
+                    minimumZoom = (activeCamera?.minZoom ?: 1f) * intrinsicZoom,
+                    maximumZoom = (activeCamera?.maxZoom ?: 1f) * intrinsicZoom,
+                    onZoomSelected = ::animateZoomStopWithPreviewTransition,
                     modifier = Modifier
-                        .fillMaxWidth()
                         .onGloballyPositioned { coordinates ->
                             zoomBarBounds = coordinates.boundsInRoot()
-                        }
+                        },
                 )
             } else {
                 SideEffect {
@@ -1017,7 +992,6 @@ fun CameraScreen(
                             previewBounds = coordinates.boundsInRoot()
                         }
                         .pointerInput(state.availableCameras) {
-                            var totalDrag = 0f
                             awaitEachGesture {
                                 var gestureStartedInPreviewControl: Boolean? = null
                                 while (true) {
@@ -1039,7 +1013,6 @@ fun CameraScreen(
                                     if (gestureStartedInPreviewControl == true) {
                                         if (event.changes.all { !it.pressed }) {
                                             viewModel.isZooming = false
-                                            totalDrag = 0f
                                             break
                                         }
                                         continue
@@ -1057,33 +1030,10 @@ fun CameraScreen(
                                             setZoomWithPreviewTransition(nextZoom)
                                         }
                                         event.changes.forEach { it.consume() }
-                                    } else if (event.changes.size == 1) {
-                                        // Single finger -> horizontal drag for LUT switch
-                                        val change = event.changes[0]
-                                        if (change.pressed) {
-                                            val dragAmount =
-                                                change.position.x - change.previousPosition.x
-                                            totalDrag += dragAmount
-                                        } else {
-                                            // onDragEnd logic
-                                            if (abs(totalDrag) > 100) {
-                                                val selectedLut = if (totalDrag > 0) {
-                                                    viewModel.switchToPreviousLut()
-                                                } else {
-                                                    viewModel.switchToNextLut()
-                                                }
-                                                selectedLut?.let {
-                                                    lutNameOverlayState.show(it.getName())
-                                                }
-                                            }
-                                            totalDrag = 0f
-                                            viewModel.isZooming = false
-                                        }
                                     }
 
                                     if (event.changes.all { !it.pressed }) {
                                         viewModel.isZooming = false
-                                        totalDrag = 0f
                                         break
                                     }
                                 }
@@ -1341,12 +1291,14 @@ fun CameraScreen(
                         color = Color.Black
                     )
 
-                    CameraParameterValuesOverlay(
-                        state = state,
-                        modifier = Modifier.align(Alignment.TopCenter)
-                    )
+                    if (showManualControls) {
+                        CameraParameterValuesOverlay(
+                            state = state,
+                            modifier = Modifier.align(Alignment.TopCenter)
+                        )
+                    }
 
-                    if (isPhotoStyleMode) {
+                    if (isPhotoStyleMode && showManualControls) {
                         parameterRuler(
                             Modifier
                                 .align(Alignment.BottomCenter)
@@ -1413,24 +1365,20 @@ fun CameraScreen(
 
 
         val controls = @Composable { modifier: Modifier ->
-            Controls(
+            PixelCameraCaptureControls(
                 state = state,
-                viewModel = viewModel,
-                galleryViewModel = galleryViewModel,
                 latestPhoto = latestPhoto,
-                useMultipleExposure = useMultipleExposure,
-                naturalLightEnabled = naturalLightEnabled,
-                multipleExposureState = multipleExposureState,
-                onGalleryThumbnailBoundsChanged = { bounds ->
-                    galleryThumbnailBounds = bounds
-                },
+                onGalleryClick = onGalleryClick,
                 onSwitchCameraClick = ::switchCameraWithPreviewTransition,
-                onCaptureModeSelected = ::setCaptureModeWithPreviewTransition,
-                onCaptureTap = {
+                onModeSelected = {
+                    showManualControls = false
+                    setCaptureModeWithPreviewTransition(it)
+                },
+                onCaptureClick = {
                     val shouldDebounceRawCapture = useRaw && state.captureMode == CaptureMode.PHOTO
                     if (shouldDebounceRawCapture) {
                         if (rawCaptureTapLocked) {
-                            return@Controls
+                            return@PixelCameraCaptureControls
                         }
                         rawCaptureTapLocked = true
                         scope.launch {
@@ -1447,10 +1395,16 @@ fun CameraScreen(
                     }
                     viewModel.capture()
                 },
-                onGalleryClick = {
-                    onGalleryClick()
+                onLongPressStart = viewModel::startContinuousCapture,
+                onLongPressEnd = viewModel::stopContinuousCapture,
+                onPauseToggle = {
+                    if (state.videoRecordingState.isPaused) viewModel.resumeVideoRecording()
+                    else viewModel.pauseVideoRecording()
                 },
-                modifier = modifier
+                onVideoFrameCapture = viewModel::captureVideoFrame,
+                allowLongPress = state.captureMode == CaptureMode.QUICK_SHOT ||
+                    (!naturalLightEnabled && state.captureMode == CaptureMode.PHOTO && !useMultipleExposure),
+                modifier = modifier,
             )
         }
 
@@ -1458,7 +1412,7 @@ fun CameraScreen(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .paint(backgroundPainter, contentScale = ContentScale.Crop)
+                    .background(Color.Black)
                     .navigationBarsPadding(),
             ) {
                 // Keep the viewfinder centered on compact screens; use spare height on taller screens.
@@ -1482,16 +1436,18 @@ fun CameraScreen(
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         zoomBar()
-                        AnimatedVisibility(visible = showVideoParameterRuler) {
+                        AnimatedVisibility(visible = showManualControls && showVideoParameterRuler) {
                             parameterRuler(Modifier)
                         }
-                        parameterBar { param ->
-                            val wasSelected = selectedParameter == param
-                            selectedParameter = param
-                            showVideoParameterRuler = if (wasSelected) {
-                                !showVideoParameterRuler
-                            } else {
-                                true
+                        if (showManualControls) {
+                            parameterBar { param ->
+                                val wasSelected = selectedParameter == param
+                                selectedParameter = param
+                                showVideoParameterRuler = if (wasSelected) {
+                                    !showVideoParameterRuler
+                                } else {
+                                    true
+                                }
                             }
                         }
                         Spacer(modifier = Modifier.height(8.dp))
@@ -1505,7 +1461,7 @@ fun CameraScreen(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .paint(backgroundPainter, contentScale = ContentScale.Crop)
+                    .background(Color.Black)
                     .navigationBarsPadding(),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
@@ -1532,7 +1488,7 @@ fun CameraScreen(
 
 
                     AnimatedVisibility(
-                        visible = !isXpan && isPhotoStyleMode,
+                        visible = !isXpan && isPhotoStyleMode && showManualControls,
                     ) {
                         parameterBar { param ->
                             selectedParameter = param
@@ -1584,6 +1540,22 @@ fun CameraScreen(
             videoAudioInputId = state.videoConfig.audioInputId,
             videoAudioInputOptions = videoAudioInputOptions,
             onVideoAudioInputChange = { viewModel.setVideoAudioInputId(it) },
+            timerSeconds = state.timerSeconds,
+            onTimerToggle = viewModel::toggleTimer,
+            showGrid = state.showGrid,
+            onGridToggle = viewModel::toggleGrid,
+            showHistogram = viewModel.showHistogram,
+            onHistogramToggle = { viewModel.saveShowHistogram(!viewModel.showHistogram) },
+            useLivePhoto = useLivePhoto,
+            onLivePhotoToggle = { viewModel.setUseLivePhoto(it) },
+            onQuickShotClick = {
+                activePanel = ActivePanel.NONE
+                setCaptureModeWithPreviewTransition(CaptureMode.QUICK_SHOT)
+            },
+            onExitQuickShot = {
+                activePanel = ActivePanel.NONE
+                setCaptureModeWithPreviewTransition(CaptureMode.PHOTO)
+            },
             quickShotResolution = state.quickShotConfig.resolution,
             quickShotCapabilities = state.quickShotCapabilities,
             onQuickShotResolutionChange = { runPreviewTransition { viewModel.setQuickShotResolution(it) } },
@@ -1677,6 +1649,19 @@ fun CameraScreen(
             },
             useMultipleExposure = useMultipleExposure,
             onMultipleExposureToggle = { viewModel.setUseMultipleExposure(it) },
+            onManualControlsClick = {
+                activePanel = ActivePanel.NONE
+                showManualControls = true
+            },
+            onLooksClick = {
+                activePanel = ActivePanel.FILTERS
+            },
+            onSwitchToBeginner = {
+                activePanel = ActivePanel.NONE
+                onSwitchToBeginner()
+            },
+            canSwitchToBeginner = canSwitchToBeginner,
+            onDismissRequest = { activePanel = ActivePanel.NONE },
             contentTopPadding = CameraTopBarBaseTopPadding + topSafePadding
         )
 

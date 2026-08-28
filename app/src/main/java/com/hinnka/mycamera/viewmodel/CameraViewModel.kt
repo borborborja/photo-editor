@@ -46,6 +46,7 @@ import com.hinnka.mycamera.model.CameraPreset
 import com.hinnka.mycamera.model.BeginnerSimulation
 import com.hinnka.mycamera.model.CameraExperience
 import com.hinnka.mycamera.model.canChangeCameraExperience
+import com.hinnka.mycamera.model.resolveCaptureModeForExperience
 import com.hinnka.mycamera.model.ColorRecipeParams
 import com.hinnka.mycamera.model.LutSelectorMode
 import com.hinnka.mycamera.model.SafeImage
@@ -790,8 +791,12 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         if (!canChangeCameraExperience.value) return
         val prefs = userPreferencesRepository.userPreferences.first()
         beginnerRecipeOverride.value = prefs.beginnerSimulation.recipe
-        if (state.value.captureMode != CaptureMode.PHOTO) {
-            cameraController.setCaptureMode(CaptureMode.PHOTO)
+        val beginnerMode = resolveCaptureModeForExperience(
+            CameraExperience.BEGINNER,
+            state.value.captureMode,
+        )
+        if (state.value.captureMode != beginnerMode) {
+            cameraController.setCaptureMode(beginnerMode)
             currentSurfaceTexture = null
             cameraController.closeCamera()
         }
@@ -804,6 +809,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         cameraController.setUseP010(false)
         cameraController.setUseHlg10(false)
         cameraController.setUseP3ColorSpace(false)
+        cameraController.setVideoLogProfile(VideoLogProfile.OFF)
     }
 
     private suspend fun restoreProCameraExperience() {
@@ -2242,12 +2248,14 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                     cameraController.setMeteringMode(it.meteringMode)
                 }
                 cameraController.setCaptureMode(
-                    if (isBeginnerCamera) CaptureMode.PHOTO else it.captureMode
+                    resolveCaptureModeForExperience(it.cameraExperience, it.captureMode)
                 )
                 cameraController.setVideoResolution(it.videoResolution)
                 cameraController.setVideoFps(it.videoFps)
                 cameraController.setVideoAspectRatio(it.videoAspectRatio)
-                cameraController.setVideoLogProfile(it.videoLogProfile)
+                cameraController.setVideoLogProfile(
+                    if (isBeginnerCamera) VideoLogProfile.OFF else it.videoLogProfile
+                )
                 cameraController.setVideoBitrate(it.videoBitrate)
                 cameraController.setVideoAudioInputId(it.videoAudioInputId)
                 cameraController.setVideoRecordingPath(it.videoRecordingPath, it.videoRecordingTreeUri)
@@ -2393,13 +2401,15 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                 }
                 val isBeginnerCamera = prefs.cameraExperience == CameraExperience.BEGINNER
                 cameraController.setCaptureMode(
-                    if (isBeginnerCamera) CaptureMode.PHOTO else prefs.captureMode
+                    resolveCaptureModeForExperience(prefs.cameraExperience, prefs.captureMode)
                 )
                 cameraController.setQuickShotResolution(prefs.quickShotResolution)
                 cameraController.setVideoResolution(prefs.videoResolution)
                 cameraController.setVideoFps(prefs.videoFps)
                 cameraController.setVideoAspectRatio(prefs.videoAspectRatio)
-                cameraController.setVideoLogProfile(prefs.videoLogProfile)
+                cameraController.setVideoLogProfile(
+                    if (isBeginnerCamera) VideoLogProfile.OFF else prefs.videoLogProfile
+                )
                 cameraController.setVideoBitrate(prefs.videoBitrate)
                 cameraController.setVideoAudioInputId(prefs.videoAudioInputId)
                 cameraController.setVideoRecordingPath(prefs.videoRecordingPath, prefs.videoRecordingTreeUri)
@@ -3822,7 +3832,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun setCaptureMode(mode: CaptureMode) {
-        if (cameraExperience.value == CameraExperience.BEGINNER && mode != CaptureMode.PHOTO) return
+        if (mode != resolveCaptureModeForExperience(cameraExperience.value, mode)) return
         if (state.value.videoRecordingState.isRecording && mode != state.value.captureMode) return
         val shouldDisableVideoLog = mode != CaptureMode.VIDEO &&
             state.value.videoConfig.logProfile != VideoLogProfile.OFF

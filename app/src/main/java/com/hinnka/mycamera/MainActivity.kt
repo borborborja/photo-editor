@@ -77,7 +77,6 @@ import com.hinnka.mycamera.screencapture.ScreenCaptureRenderConfigStore
 import com.hinnka.mycamera.ui.camera.CameraScreen
 import com.hinnka.mycamera.ui.camera.BeginnerCameraScreen
 import com.hinnka.mycamera.ui.camera.CameraExperienceWizard
-import com.hinnka.mycamera.ui.camera.ProExperienceSwitcher
 import com.hinnka.mycamera.data.FilmData
 import com.hinnka.mycamera.model.CameraExperience
 import com.hinnka.mycamera.ui.camera.ColorWalkScreen
@@ -317,7 +316,11 @@ class MainActivity : ComponentActivity() {
                 crop = phantomPipCrop
             )
 
-            PhotonCameraTheme {
+            PhotonCameraTheme(
+                // Camera chrome follows Material You when the platform offers it;
+                // the viewfinder itself stays black so colour never competes with a photo.
+                dynamicColor = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S,
+            ) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = Color.Black
@@ -735,6 +738,10 @@ fun NavigationHost(
                                     onPresetManagementClick = {
                                         navController.navigate(Routes.PRESET_MANAGEMENT)
                                     },
+                                    onSwitchToBeginner = {
+                                        cameraViewModel.selectCameraExperience(CameraExperience.BEGINNER)
+                                    },
+                                    canSwitchToBeginner = canChangeCameraExperience,
                                     modifier = Modifier.weight(1f),
                                 )
                                 GalleryDetailScreen(
@@ -783,18 +790,12 @@ fun NavigationHost(
                                 onPresetManagementClick = {
                                     navController.navigate(Routes.PRESET_MANAGEMENT)
                                 },
+                                onSwitchToBeginner = {
+                                    cameraViewModel.selectCameraExperience(CameraExperience.BEGINNER)
+                                },
+                                canSwitchToBeginner = canChangeCameraExperience,
                             )
                         }
-
-                        ProExperienceSwitcher(
-                            onSwitchToBeginner = {
-                                cameraViewModel.selectCameraExperience(CameraExperience.BEGINNER)
-                            },
-                            enabled = canChangeCameraExperience,
-                            modifier = Modifier
-                                .align(Alignment.TopStart)
-                                .padding(start = 12.dp, top = 98.dp),
-                        )
                     }
                 }
             }

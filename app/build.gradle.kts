@@ -26,8 +26,8 @@ android {
         applicationId = "org.foss.photoeditor"
         minSdk = 30
         targetSdk = 36
-        versionCode = 160
-        versionName = "1.28.7"
+        versionCode = 161
+        versionName = "1.28.8"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         
