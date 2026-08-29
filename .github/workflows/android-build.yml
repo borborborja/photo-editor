@@ -49,6 +49,9 @@ jobs:
           ./gradlew --no-daemon
           :app:testDefaultDebugUnitTest
           --tests 'com.hinnka.mycamera.fossin.*'
+          --tests 'com.hinnka.mycamera.model.CameraExperienceTest'
+          --tests 'com.hinnka.mycamera.ui.camera.PixelCameraChromeTest'
+          --tests 'com.hinnka.mycamera.ui.camera.ZoomStopAnimationTest'
           --tests 'com.hinnka.mycamera.lut.*ParserValidationTest'
 
       - name: Build unsigned F-Droid APK

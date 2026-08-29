@@ -269,6 +269,9 @@
     <string name="back">Back</string>
     <string name="unknown">Unknown</string>
     <string name="take_photo">Take Photo</string>
+    <string name="camera_start_video">Start video</string>
+    <string name="camera_stop_video">Stop video</string>
+    <string name="camera_zoom_value">Zoom %1$s</string>
     <string name="capture_mode_photo">Photo</string>
     <string name="capture_mode_quick_shot">Quick Shot</string>
     <string name="capture_mode_video">Video</string>

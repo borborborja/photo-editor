@@ -37,6 +37,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -187,10 +188,15 @@ fun PixelCameraZoomPill(
         ) {
             stops.forEach { stop ->
                 val selected = kotlin.math.abs(zoomRatio - stop) < 0.13f
+                val zoomDescription = stringResource(R.string.camera_zoom_value, formatPixelZoom(stop))
                 Surface(
                     modifier = Modifier
                         .size(42.dp)
                         .clip(CircleShape)
+                        .semantics {
+                            contentDescription = zoomDescription
+                            this.selected = selected
+                        }
                         .clickable { onZoomSelected(stop) },
                     shape = CircleShape,
                     color = if (selected) MaterialTheme.colorScheme.primary else Color.Transparent,
@@ -362,10 +368,16 @@ private fun PixelCameraShutter(
         label = "pixelShutterCenterScale",
     )
     var longPressStarted = false
+    val shutterDescription = when {
+        isRecording -> stringResource(R.string.camera_stop_video)
+        captureMode == CaptureMode.VIDEO -> stringResource(R.string.camera_start_video)
+        else -> stringResource(R.string.take_photo)
+    }
     Surface(
         modifier = Modifier
             .size(82.dp)
             .clip(CircleShape)
+            .semantics { contentDescription = shutterDescription }
             .pointerInput(enabled, allowLongPress, isRecording) {
                 detectTapGestures(
                     onTap = { if (enabled) onClick() },
@@ -451,6 +463,10 @@ private fun PixelCameraModeItem(
             style = MaterialTheme.typography.labelLarge,
             modifier = Modifier
                 .clip(RoundedCornerShape(12.dp))
+                .semantics {
+                    contentDescription = text
+                    this.selected = selected
+                }
                 .clickable(enabled = enabled, onClick = onClick)
                 .padding(horizontal = 8.dp, vertical = 6.dp),
         )

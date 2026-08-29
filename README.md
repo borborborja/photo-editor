@@ -12,8 +12,10 @@ flux d’edició inspirats en Snapseed.
   Grunge, Noir, Black & White, Portrait, Face Enhance i Head Pose.
 - Text amb estils Plain, Bold, Outline, Neon, Stamp i Typewriter.
 - LUTs locals `.cube` i `.plut`, presets inclosos i importació de LUTs propis.
-- Edició no destructiva amb receptes, undo/redo, comparació abans/després,
-  exportació JPEG i compartir local.
+- Edició no destructiva amb una pila tipada d’operacions, màscares, undo/redo,
+  comparació abans/després, exportació JPEG/PNG i compartir local.
+- Desenvolupament RAW local via LibRaw; consulta [RAW_COMPATIBILITY.md](RAW_COMPATIBILITY.md)
+  per les famílies de formats i els límits.
 
 Totes les operacions de l’editor es processen al dispositiu. El flavor `default`
 és la distribució FOSS per a F-Droid i no inclou Google Play Services, Play
@@ -41,6 +43,7 @@ F-Droid.
 
 Consulta [FOSS_BUILD.md](FOSS_BUILD.md) per als detalls de la compilació,
 l’auditoria de permisos i les notes de reproductibilitat.
+Consulta [QUALITY.md](QUALITY.md) per la política de previsualització i els controls de qualitat.
 
 ## Llicència
 

@@ -4526,14 +4526,28 @@ private suspend fun loadStackSource(
     rawDevelop: RawDevelopState?,
     maxEdge: Int,
 ): StackDecodedSource? {
-    if (rawDevelop == null) {
+    val rawHint = FossinRawImportSupport.inspect(
+        displayName(context, uri),
+        context.contentResolver.getType(uri),
+    )
+    // A recognised RAW gets to LibRaw first. Several platform decoders otherwise expose only
+    // the embedded JPEG, which looks successful but silently loses the editable sensor source.
+    if (rawDevelop == null && !rawHint.isRawCandidate) {
         runCatching { loadBitmap(context, uri, maxEdge) }.getOrNull()?.let { bitmap ->
             return StackDecodedSource(bitmap, null)
         }
     }
     val develop = rawDevelop ?: RawDevelopState()
-    val raw = decodeRawStackSource(context, processor, uri, develop, maxEdge) ?: return null
-    return StackDecodedSource(raw, develop)
+    val raw = decodeRawStackSource(context, processor, uri, develop, maxEdge)
+    if (raw != null) return StackDecodedSource(raw, develop)
+    // The fallback is intentionally only for an initial, failed RAW attempt. A project already
+    // marked RAW must never be replaced by an embedded preview on a later reopen.
+    if (rawDevelop == null && rawHint.isRawCandidate) {
+        runCatching { loadBitmap(context, uri, maxEdge) }.getOrNull()?.let { bitmap ->
+            return StackDecodedSource(bitmap, null)
+        }
+    }
+    return null
 }
 
 private suspend fun decodeRawStackSource(
@@ -4611,7 +4625,7 @@ private fun persistReadPermission(context: android.content.Context, uri: Uri) {
  */
 
 private const val FOSSIN_STACK_PROJECTS_DIRECTORY = "fossin-stack-projects"
-private const val FOSSIN_STACK_SCHEMA_VERSION = 4
+private const val FOSSIN_STACK_SCHEMA_VERSION = 5
 private const val FOSSIN_STACK_PREVIOUS_SCHEMA_VERSION = 2
 private const val STACK_MASK_EDGE = 512
 
@@ -4692,6 +4706,66 @@ private enum class StackTool(
     Text(R.string.fossin_text, StackToolCategory.Style, isGlobalGeometry = true),
 }
 
+/**
+ * Stable operation groups persisted with each layer. `StackTool` remains the UI entry point;
+ * this type is the renderer/project contract which lets new controls be added without treating a
+ * project as a single opaque recipe.
+ */
+private enum class StackOperationType {
+    Look,
+    Tone,
+    Detail,
+    Dehaze,
+    TonalContrast,
+    Curves,
+    WhiteBalance,
+    Color,
+    ColorGrading,
+    LensBlur,
+    Vignette,
+    LocalAdjustment,
+    Retouch,
+    Geometry,
+    Effect,
+    Overlay,
+    Decoration,
+}
+
+private val StackTool.operationType: StackOperationType
+    get() = when (this) {
+        StackTool.Looks -> StackOperationType.Look
+        StackTool.Tune -> StackOperationType.Tone
+        StackTool.Details -> StackOperationType.Detail
+        StackTool.Dehaze -> StackOperationType.Dehaze
+        StackTool.TonalContrast -> StackOperationType.TonalContrast
+        StackTool.Curves -> StackOperationType.Curves
+        StackTool.WhiteBalance -> StackOperationType.WhiteBalance
+        StackTool.Color -> StackOperationType.Color
+        StackTool.ColorGrading -> StackOperationType.ColorGrading
+        StackTool.LensBlur -> StackOperationType.LensBlur
+        StackTool.Vignette -> StackOperationType.Vignette
+        StackTool.Selective, StackTool.Brush -> StackOperationType.LocalAdjustment
+        StackTool.Healing -> StackOperationType.Retouch
+        StackTool.Perspective, StackTool.Crop, StackTool.Expand, StackTool.HeadPose -> StackOperationType.Geometry
+        StackTool.Grain, StackTool.Bloom, StackTool.Hdr, StackTool.ChromaticAberration,
+        StackTool.Halation, StackTool.Vintage, StackTool.BlackWhite, StackTool.Drama,
+        StackTool.Noir, StackTool.Grunge -> StackOperationType.Effect
+        StackTool.DoubleExposure -> StackOperationType.Overlay
+        StackTool.Frame, StackTool.Text -> StackOperationType.Decoration
+        StackTool.RawDevelop -> StackOperationType.Tone
+    }
+
+private val StackTool.isExpensivePreviewOperation: Boolean
+    get() = this in setOf(
+        StackTool.Details,
+        StackTool.Dehaze,
+        StackTool.Curves,
+        StackTool.LensBlur,
+        StackTool.Healing,
+        StackTool.Hdr,
+        StackTool.DoubleExposure,
+    )
+
 /** A tiny local MRU list keeps the tools a photographer actually uses one tap away. */
 private object StackToolUsageStore {
     private const val PREFERENCES = "fossin_stack_tool_usage"
@@ -4752,6 +4826,8 @@ private data class StackMask(
 private data class StackOperation(
     val id: String = UUID.randomUUID().toString(),
     val tool: StackTool,
+    val type: StackOperationType = tool.operationType,
+    val payloadVersion: Int = 1,
     val state: EditorState = EditorState(),
     val preset: String? = null,
     val mask: StackMask? = null,
@@ -4846,6 +4922,8 @@ private object StackProjectStore {
                     val item = JsonObject().apply {
                         addProperty("id", operation.id)
                         addProperty("tool", operation.tool.name)
+                        addProperty("type", operation.type.name)
+                        addProperty("payloadVersion", operation.payloadVersion)
                         addProperty("enabled", operation.enabled)
                         operation.preset?.let { addProperty("preset", it) }
                         addProperty("state", encodeBundle(bundle))
@@ -4902,9 +4980,16 @@ private object StackProjectStore {
                         readStackMask(File(directory, it), maskJson.bool("inverted", false), maskJson.float("feather", 0.08f))
                     }
                 }
+                val tool = item.string("tool")?.let { enumValueOf<StackTool>(it) } ?: return@runCatching null
                 StackOperation(
                     id = item.string("id") ?: return@runCatching null,
-                    tool = item.string("tool")?.let { enumValueOf<StackTool>(it) } ?: return@runCatching null,
+                    tool = tool,
+                    // A tool owns the executable contract. Treat a malformed persisted type as
+                    // advisory and preserve forward compatibility with older manifests.
+                    type = item.string("type")?.let { value ->
+                        runCatching { enumValueOf<StackOperationType>(value) }.getOrNull()
+                    }?.takeIf { it == tool.operationType } ?: tool.operationType,
+                    payloadVersion = item.int("payloadVersion").coerceAtLeast(1),
                     state = state,
                     preset = item.string("preset"),
                     enabled = item.bool("enabled", true),
@@ -6019,26 +6104,33 @@ private fun FossinStackEditor(
     // preview resolution before it is committed, so horizontal gestures remain live without
     // flattening the original or adding a temporary stack operation.
     val sourceDevelop = rawDraft ?: rawDevelop
-    LaunchedEffect(sourceUri, sourceDevelop) {
+    val previewMaxEdge = FossinPreviewQuality.maxEdge(
+        isRaw = sourceDevelop != null,
+        enabledOperationCount = operations.count(StackOperation::enabled),
+        expensiveOperationCount = operations.count { operation ->
+            operation.enabled && operation.tool.isExpensivePreviewOperation
+        },
+    )
+    LaunchedEffect(sourceUri, sourceDevelop, previewMaxEdge) {
         val uri = sourceUri ?: return@LaunchedEffect
-        val expectedKey = "${uri}:${sourceDevelop}"
+        val expectedKey = "${uri}:${sourceDevelop}:$previewMaxEdge"
         if (source != null && loadedSourceKey == expectedKey) return@LaunchedEffect
         // Coalesce a gesture's intermediate RAW values; normal bitmap tools continue to render
         // immediately through the preview stack below.
-        if (sourceDevelop != null) delay(90)
+        delay(FossinPreviewQuality.rawGestureDebounceMillis(sourceDevelop != null))
         isLoadingSource = true
         val decoded = try {
             // LibRaw and the GPU recipe pipeline share renderer resources. Serialising this with
             // the preview renderer prevents a rapid RAW gesture from starting competing develops;
             // cancelled, superseded values stop while waiting for the lock.
-            renderMutex.withLock { loadStackSource(context, processor, uri, sourceDevelop, maxEdge = 1440) }
+            renderMutex.withLock { loadStackSource(context, processor, uri, sourceDevelop, maxEdge = previewMaxEdge) }
         } finally {
             isLoadingSource = false
         }
         if (decoded != null) {
             source = decoded.bitmap
             if (rawDevelop == null && decoded.rawDevelop != null) rawDevelop = decoded.rawDevelop
-            loadedSourceKey = "${uri}:${decoded.rawDevelop}"
+            loadedSourceKey = "${uri}:${decoded.rawDevelop}:$previewMaxEdge"
             if (projectId == null) {
                 projectId = StackProjectStore.newId()
             }
@@ -8138,6 +8230,8 @@ private object StackDesignStore {
             val bundle = with(editorStateSaver) { FossinProjectSaverScope.save(state) } ?: Bundle()
             serial.add(JsonObject().apply {
                 addProperty("tool", operation.tool.name)
+                addProperty("type", operation.type.name)
+                addProperty("payloadVersion", operation.payloadVersion)
                 addProperty("state", encodeBundle(bundle))
                 operation.preset?.let { addProperty("preset", it) }
             })
@@ -8168,6 +8262,8 @@ private object StackDesignStore {
             val bundle = with(editorStateSaver) { FossinProjectSaverScope.save(operation.state.copy(lut = null, lutUri = null, overlayUri = null)) } ?: Bundle()
             add(JsonObject().apply {
                 addProperty("tool", operation.tool.name)
+                addProperty("type", operation.type.name)
+                addProperty("payloadVersion", operation.payloadVersion)
                 addProperty("state", encodeBundle(bundle))
                 operation.preset?.let { addProperty("preset", it) }
             })
@@ -8177,10 +8273,19 @@ private object StackDesignStore {
     private fun decodeDesignOperation(value: JsonObject): StackOperation? = runCatching {
         val tool = value.string("tool")?.let { enumValueOf<StackTool>(it) } ?: return@runCatching null
         val state = value.string("state")?.let(::decodeBundle)?.let(editorStateSaver::restore) ?: return@runCatching null
-        StackOperation(tool = tool, state = state, preset = value.string("preset"))
+        StackOperation(
+            tool = tool,
+            type = value.string("type")?.let { typeName ->
+                runCatching { enumValueOf<StackOperationType>(typeName) }.getOrNull()
+            }?.takeIf { it == tool.operationType } ?: tool.operationType,
+            payloadVersion = value.int("payloadVersion").coerceAtLeast(1),
+            state = state,
+            preset = value.string("preset"),
+        )
     }.getOrNull()
 
     private fun JsonObject.string(key: String) = get(key)?.takeUnless { it.isJsonNull }?.asString
+    private fun JsonObject.int(key: String) = runCatching { get(key).asInt }.getOrDefault(1)
 }
 
 private fun mergeStackMasks(current: StackMask?, next: StackMask, add: Boolean): StackMask {
