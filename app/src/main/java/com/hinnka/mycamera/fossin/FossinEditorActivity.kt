@@ -26,6 +26,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.Canvas as ComposeCanvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -105,6 +106,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.annotation.StringRes
 import androidx.compose.ui.text.font.FontWeight
@@ -4614,6 +4617,10 @@ private const val STACK_MASK_EDGE = 512
 
 private enum class StackEditorTab { Styles, Tools, Export }
 private enum class StackExportMode { KeepProject, PhotoOnly }
+private enum class StackExportImageFormat(val mimeType: String) {
+    Jpeg("image/jpeg"),
+    Png("image/png"),
+}
 private enum class RawWhiteBalanceMode { AsShot, Auto, Manual }
 private enum class RawExportSize(val maxEdge: Int) { Native(0), FourK(4096), TwoK(2048) }
 private fun rawExportSizeFor(maxEdge: Int): RawExportSize = when (maxEdge) {
@@ -4638,6 +4645,8 @@ private data class RawDevelopState(
 
 private enum class StackToolCategory(@StringRes val labelRes: Int) {
     All(R.string.fossin_tool_category_all),
+    Recent(R.string.fossin_tool_category_recent),
+    Favorites(R.string.fossin_tool_category_favorites),
     Enhance(R.string.fossin_tool_category_enhance),
     Correct(R.string.fossin_tool_category_correct),
     Style(R.string.fossin_tool_category_style),
@@ -4683,6 +4692,49 @@ private enum class StackTool(
     Text(R.string.fossin_text, StackToolCategory.Style, isGlobalGeometry = true),
 }
 
+/** A tiny local MRU list keeps the tools a photographer actually uses one tap away. */
+private object StackToolUsageStore {
+    private const val PREFERENCES = "fossin_stack_tool_usage"
+    private const val KEY_RECENT = "recent"
+    private const val KEY_FAVORITES = "favorites"
+    private const val MAX_RECENT = 8
+
+    fun recent(context: Context): List<StackTool> = context
+        .getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+        .getString(KEY_RECENT, "")
+        .orEmpty()
+        .split(',')
+        .mapNotNull { name -> runCatching { enumValueOf<StackTool>(name) }.getOrNull() }
+        .distinct()
+        .take(MAX_RECENT)
+
+    fun record(context: Context, tool: StackTool) {
+        val next = (listOf(tool) + recent(context)).distinct().take(MAX_RECENT)
+        context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_RECENT, next.joinToString(",") { it.name })
+            .apply()
+    }
+
+    fun favorites(context: Context): List<StackTool> = context
+        .getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+        .getString(KEY_FAVORITES, "")
+        .orEmpty()
+        .split(',')
+        .mapNotNull { name -> runCatching { enumValueOf<StackTool>(name) }.getOrNull() }
+        .distinct()
+
+    fun toggleFavorite(context: Context, tool: StackTool) {
+        val next = favorites(context).toMutableList().apply {
+            if (!remove(tool)) add(tool)
+        }
+        context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_FAVORITES, next.joinToString(",") { it.name })
+            .apply()
+    }
+}
+
 private data class StackMask(
     val alpha: ByteArray,
     val width: Int,
@@ -4705,6 +4757,24 @@ private data class StackOperation(
     val mask: StackMask? = null,
     val enabled: Boolean = true,
 )
+
+/**
+ * Stack operations are intentionally immutable.  These helpers create a new list so an
+ * operation reorder or duplicate is an undoable edit just like changing a parameter.
+ */
+private fun List<StackOperation>.duplicateStackOperation(id: String): List<StackOperation> {
+    val index = indexOfFirst { it.id == id }
+    if (index < 0) return this
+    val copy = this[index].copy(id = UUID.randomUUID().toString())
+    return toMutableList().apply { add(index + 1, copy) }
+}
+
+private fun List<StackOperation>.moveStackOperation(id: String, offset: Int): List<StackOperation> {
+    val index = indexOfFirst { it.id == id }
+    val destination = index + offset
+    if (index < 0 || destination !in indices) return this
+    return toMutableList().apply { add(destination, removeAt(index)) }
+}
 
 private data class StackProjectSummary(
     val id: String,
@@ -5282,9 +5352,10 @@ private suspend fun renderStackBitmap(
     source: Bitmap,
     operations: List<StackOperation>,
 ): Bitmap = withContext(Dispatchers.Default) {
+    val maskCache = StackMaskSofteningCache()
     var current = source
     operations.filter(StackOperation::enabled).forEach { operation ->
-        val next = renderStackOperation(context, processor, current, operation)
+        val next = renderStackOperation(context, processor, current, operation, maskCache::softened)
         if (current !== source && current !== next && !current.isRecycled) current.recycle()
         current = next
     }
@@ -5296,6 +5367,7 @@ private suspend fun renderStackOperation(
     processor: LutImageProcessor,
     input: Bitmap,
     operation: StackOperation,
+    softenedMask: (StackMask) -> FloatArray? = ::softenedStackMask,
 ): Bitmap {
     val overlay = operation.state.overlayUri?.let { value ->
         runCatching { loadBitmap(context, Uri.parse(value), 2048) }.getOrNull()
@@ -5305,7 +5377,7 @@ private suspend fun renderStackOperation(
     // A mask is a property of every operation, including geometry operations.  Geometry may
     // change the canvas size, so blendStackMask normalises the previous frame to the operation's
     // output before applying the local alpha rather than silently discarding the user's mask.
-    val output = operation.mask?.let { mask -> blendStackMask(input, effected, mask) } ?: effected
+    val output = operation.mask?.let { mask -> blendStackMask(input, effected, mask, softenedMask(mask)) } ?: effected
     if (effected !== output && effected !== input && !effected.isRecycled) effected.recycle()
     return output
 }
@@ -5323,6 +5395,7 @@ private class StackPreviewRenderer(
     private var source: Bitmap? = null
     private val frames = mutableListOf<Frame>()
     private val retired = mutableListOf<Bitmap>()
+    private val maskCache = StackMaskSofteningCache()
 
     suspend fun render(input: Bitmap, operations: List<StackOperation>): Bitmap = withContext(Dispatchers.Default) {
         if (source !== input) {
@@ -5335,7 +5408,7 @@ private class StackPreviewRenderer(
         invalidateFrom(prefix)
         var current = if (prefix == 0) input else frames[prefix - 1].bitmap
         for (index in prefix until enabled.size) {
-            current = renderStackOperation(context, processor, current, enabled[index])
+            current = renderStackOperation(context, processor, current, enabled[index], maskCache::softened)
             frames += Frame(enabled[index], current)
         }
         current
@@ -5355,6 +5428,7 @@ private class StackPreviewRenderer(
         frames.forEach { frame -> if (!frame.bitmap.isRecycled) frame.bitmap.recycle() }
         frames.clear()
         releaseRetired(null)
+        maskCache.clear()
         source = null
     }
 
@@ -5363,7 +5437,29 @@ private class StackPreviewRenderer(
     }
 }
 
-private fun blendStackMask(input: Bitmap, effect: Bitmap, mask: StackMask): Bitmap {
+/**
+ * Feathering a 512px mask is inexpensive once, but doing it again for every horizontal gesture
+ * causes visible latency.  Cache the immutable softened alpha for each operation until its mask
+ * changes; cached values are preview-only and are discarded with the renderer.
+ */
+private class StackMaskSofteningCache {
+    private data class Key(val signature: Int, val width: Int, val height: Int, val feather: Float)
+
+    private val values = mutableMapOf<Key, FloatArray>()
+
+    fun softened(mask: StackMask): FloatArray? {
+        val radius = (mask.feather.coerceIn(0f, 0.4f) * minOf(mask.width, mask.height)).roundToInt()
+        if (radius <= 0) return null
+        val key = Key(mask.signature, mask.width, mask.height, mask.feather)
+        if (key !in values && values.size >= 3) values.clear()
+        return values.getOrPut(key) { softenedStackMask(mask) ?: FloatArray(0) }
+            .takeIf { it.isNotEmpty() }
+    }
+
+    fun clear() = values.clear()
+}
+
+private fun blendStackMask(input: Bitmap, effect: Bitmap, mask: StackMask, softenedMask: FloatArray? = null): Bitmap {
     val normalisedInput = if (input.width == effect.width && input.height == effect.height) input else {
         Bitmap.createScaledBitmap(input, effect.width, effect.height, true)
     }
@@ -5372,7 +5468,6 @@ private fun blendStackMask(input: Bitmap, effect: Bitmap, mask: StackMask): Bitm
     normalisedInput.getPixels(inPixels, 0, effect.width, 0, 0, effect.width, effect.height)
     effect.getPixels(effectPixels, 0, effect.width, 0, 0, effect.width, effect.height)
     val output = IntArray(inPixels.size)
-    val softenedMask = softenedStackMask(mask)
     inPixels.indices.forEach { index ->
         val x = index % effect.width
         val y = index / effect.width
@@ -5608,6 +5703,8 @@ private fun FossinStackEditor(
     var isLoadingSource by remember { mutableStateOf(false) }
     var isExporting by remember { mutableStateOf(false) }
     var builtIns by remember { mutableStateOf<List<LutChoice>>(emptyList()) }
+    var recentTools by remember { mutableStateOf(StackToolUsageStore.recent(context)) }
+    var favoriteTools by remember { mutableStateOf(StackToolUsageStore.favorites(context)) }
     val processor = remember { LutImageProcessor(context.applicationContext) }
     val renderMutex = remember { Mutex() }
     val previewRenderer = remember { StackPreviewRenderer(context.applicationContext, processor) }
@@ -5641,6 +5738,8 @@ private fun FossinStackEditor(
             rawParameterKey = rawDevelopParameters(sourceRaw).firstOrNull()?.key
             showRawParameters = false
             mainTab = StackEditorTab.Tools
+            StackToolUsageStore.record(context, tool)
+            recentTools = StackToolUsageStore.recent(context)
             return
         }
         activeTool = tool
@@ -5650,6 +5749,8 @@ private fun FossinStackEditor(
         showParameters = false
         maskAdvancedMode = false
         mainTab = StackEditorTab.Tools
+        StackToolUsageStore.record(context, tool)
+        recentTools = StackToolUsageStore.recent(context)
     }
     fun updateDraft(transform: (EditorState) -> EditorState) {
         draft = draft?.let { it.copy(state = transform(it.state)) }
@@ -5707,6 +5808,7 @@ private fun FossinStackEditor(
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let {
             persistReadPermission(context, it)
+            FossinLibraryStore.record(context, it, FossinLibraryKind.Imported)
             sourceUri = it
             projectId = StackProjectStore.newId()
             rawDevelop = null
@@ -5773,64 +5875,74 @@ private fun FossinStackEditor(
             }
         }
     }
-    val exportPicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("image/jpeg")) { target ->
-        target?.let { uri ->
-            val exportedSource = source ?: return@let
-            val exportedOperations = operations
-            val exportProjectId = projectId
-            val exportSourceUri = sourceUri
-            val exportRawDevelop = rawDevelop
-            val exportMaxEdge = if (exportRawDevelop == null) preferences.exportMaxEdge else rawExportSize.maxEdge
-            val mode = exportMode
-            scope.launch {
-                isExporting = true
-                if (exportProjectId != null && exportSourceUri != null) {
-                    StackProjectStore.save(context, exportProjectId, exportSourceUri, exportedOperations, exportRawDevelop, panorama)
-                }
-                val fullSource = exportSourceUri?.let { sourceToRender ->
-                    runCatching {
-                        renderMutex.withLock {
-                            loadStackSource(context, processor, sourceToRender, exportRawDevelop, exportMaxEdge)?.bitmap
-                        }
-                    }.getOrNull()
-                } ?: if (exportRawDevelop == null) exportedSource else null
-                // Never silently write a preview-sized substitute when a requested RAW export
-                // cannot be developed at the selected output size.
-                val output = fullSource?.let { sourceBitmap -> runCatching {
-                    renderMutex.withLock { renderStackBitmap(context, processor, sourceBitmap, exportedOperations) }
-                }.getOrNull() }
-                val projection = output?.let { candidate ->
-                    panorama?.takeIf {
-                        candidate.width >= candidate.height * 1.95f &&
-                            exportedOperations.none { operation -> operation.enabled && operation.tool.isGlobalGeometry }
-                    }?.forExport(candidate.width, candidate.height)
-                }
-                val saved = output != null && context.contentResolver.openOutputStream(uri)?.use { stream ->
-                    Panorama360.writeJpeg(
+    fun exportImage(uri: Uri, format: StackExportImageFormat) {
+        val exportedSource = source ?: return
+        val exportedOperations = operations
+        val exportProjectId = projectId
+        val exportSourceUri = sourceUri
+        val exportRawDevelop = rawDevelop
+        val exportMaxEdge = if (exportRawDevelop == null) preferences.exportMaxEdge else rawExportSize.maxEdge
+        val mode = exportMode
+        scope.launch {
+            isExporting = true
+            if (exportProjectId != null && exportSourceUri != null) {
+                StackProjectStore.save(context, exportProjectId, exportSourceUri, exportedOperations, exportRawDevelop, panorama)
+            }
+            val fullSource = exportSourceUri?.let { sourceToRender ->
+                runCatching {
+                    renderMutex.withLock {
+                        loadStackSource(context, processor, sourceToRender, exportRawDevelop, exportMaxEdge)?.bitmap
+                    }
+                }.getOrNull()
+            } ?: if (exportRawDevelop == null) exportedSource else null
+            // Never silently write a preview-sized substitute when a requested RAW export
+            // cannot be developed at the selected output size.
+            val output = fullSource?.let { sourceBitmap -> runCatching {
+                renderMutex.withLock { renderStackBitmap(context, processor, sourceBitmap, exportedOperations) }
+            }.getOrNull() }
+            val projection = output?.let { candidate ->
+                panorama?.takeIf {
+                    candidate.width >= candidate.height * 1.95f &&
+                        exportedOperations.none { operation -> operation.enabled && operation.tool.isGlobalGeometry }
+                }?.forExport(candidate.width, candidate.height)
+            }
+            val saved = output != null && context.contentResolver.openOutputStream(uri)?.use { stream ->
+                when (format) {
+                    StackExportImageFormat.Jpeg -> Panorama360.writeJpeg(
                         context, output, stream, preferences.jpegQuality, projection,
                         sourceUri = exportSourceUri,
                         metadataPolicy = preferences.metadata,
                     )
-                } == true
-                if (output != null && output !== exportedSource && output !== fullSource && !output.isRecycled) output.recycle()
-                fullSource?.takeIf { it !== exportedSource && !it.isRecycled }?.recycle()
-                isExporting = false
-                Toast.makeText(context, if (saved) R.string.fossin_export_done else R.string.fossin_export_failed, Toast.LENGTH_LONG).show()
-                if (saved && mode == StackExportMode.PhotoOnly && exportProjectId != null) {
-                    StackProjectStore.delete(context, exportProjectId)
-                    source = null
-                    rendered = null
-                    sourceUri = null
-                    projectId = null
-                    rawDevelop = null
-                    loadedSourceKey = null
-                    operations = emptyList()
-                    undoStack = emptyList()
-                    redoStack = emptyList()
-                    showingHall = true
+                    // PNG is deliberately metadata-free. JPEG remains the export format for
+                    // EXIF and 360° XMP preservation.
+                    StackExportImageFormat.Png -> output.compress(Bitmap.CompressFormat.PNG, 100, stream)
                 }
+            } == true
+            if (output != null && output !== exportedSource && output !== fullSource && !output.isRecycled) output.recycle()
+            fullSource?.takeIf { it !== exportedSource && !it.isRecycled }?.recycle()
+            isExporting = false
+            Toast.makeText(context, if (saved) R.string.fossin_export_done else R.string.fossin_export_failed, Toast.LENGTH_LONG).show()
+            if (saved) FossinLibraryStore.record(context, uri, FossinLibraryKind.Edited)
+            if (saved && mode == StackExportMode.PhotoOnly && exportProjectId != null) {
+                StackProjectStore.delete(context, exportProjectId)
+                source = null
+                rendered = null
+                sourceUri = null
+                projectId = null
+                rawDevelop = null
+                loadedSourceKey = null
+                operations = emptyList()
+                undoStack = emptyList()
+                redoStack = emptyList()
+                showingHall = true
             }
         }
+    }
+    val exportPicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument(StackExportImageFormat.Jpeg.mimeType)) { target ->
+        target?.let { exportImage(it, StackExportImageFormat.Jpeg) }
+    }
+    val pngExportPicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument(StackExportImageFormat.Png.mimeType)) { target ->
+        target?.let { exportImage(it, StackExportImageFormat.Png) }
     }
     val archivePicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { target ->
         target?.let { uri ->
@@ -6471,6 +6583,17 @@ private fun FossinStackEditor(
                         onAuto = {
                             source?.let { bitmap -> updateDraft { stackAutoTune(bitmap, it) } }
                         },
+                        onStepParameter = { direction ->
+                            activeParameter?.let { parameter ->
+                                val step = (parameter.range.endInclusive - parameter.range.start) / 100f
+                                updateDraft { state ->
+                                    parameter.update(
+                                        state,
+                                        (parameter.value + direction * step).coerceIn(parameter.range.start, parameter.range.endInclusive),
+                                    )
+                                }
+                            }
+                        },
                         onMask = { showMask = !showMask },
                         onLayers = { showLayers = true },
                     )
@@ -6513,12 +6636,25 @@ private fun FossinStackEditor(
                             onApplyDesign = { design -> mutateStack(operations + design.map { it.copy(id = UUID.randomUUID().toString(), mask = null) }) },
                             context = context,
                         )
-                        StackEditorTab.Tools -> StackToolGrid(rawAvailable = rawDevelop != null) { beginTool(it) }
+                        StackEditorTab.Tools -> StackToolGrid(
+                            rawAvailable = rawDevelop != null,
+                            recent = recentTools,
+                            favorites = favoriteTools,
+                            onTool = ::beginTool,
+                            onToggleFavorite = { tool ->
+                                StackToolUsageStore.toggleFavorite(context, tool)
+                                favoriteTools = StackToolUsageStore.favorites(context)
+                            },
+                        )
                         StackEditorTab.Export -> StackExportPanel(
                             rawSource = rawDevelop != null,
                             rawExportSize = rawExportSize,
                             onRawExportSize = { rawExportSize = it },
                             onExport = { showExportDialog = true },
+                            onExportPng = {
+                                exportMode = StackExportMode.KeepProject
+                                pngExportPicker.launch("photo-editor-edit.png")
+                            },
                             onShare = ::shareEditedImage,
                             onEditablePackage = { archivePicker.launch("photo-editor-editable.zip") },
                         )
@@ -6535,6 +6671,8 @@ private fun FossinStackEditor(
                     onEdit = { operation -> showLayers = false; beginTool(operation.tool, operation) },
                     onMask = { operation -> showLayers = false; beginTool(operation.tool, operation); showMask = true },
                     onToggle = { id -> mutateStack(operations.map { operation -> if (operation.id == id) operation.copy(enabled = !operation.enabled) else operation }) },
+                    onDuplicate = { id -> mutateStack(operations.duplicateStackOperation(id)) },
+                    onMove = { id, offset -> mutateStack(operations.moveStackOperation(id, offset)) },
                     onDelete = { id -> mutateStack(operations.filterNot { it.id == id }) },
                     onSaveDesign = {
                         StackDesignStore.save(context, operations)
@@ -6676,11 +6814,22 @@ private fun StackMainTab(tab: StackEditorTab, @StringRes label: Int, selected: S
 }
 
 @Composable
-private fun StackToolGrid(rawAvailable: Boolean, onTool: (StackTool) -> Unit) {
+private fun StackToolGrid(
+    rawAvailable: Boolean,
+    recent: List<StackTool>,
+    favorites: List<StackTool>,
+    onTool: (StackTool) -> Unit,
+    onToggleFavorite: (StackTool) -> Unit,
+) {
     var category by remember { mutableStateOf(StackToolCategory.All) }
     val visible = StackTool.values().filter { tool ->
         (rawAvailable || tool != StackTool.RawDevelop) &&
-            (category == StackToolCategory.All || tool.category == category)
+            when (category) {
+                StackToolCategory.All -> true
+                StackToolCategory.Recent -> tool in recent
+                StackToolCategory.Favorites -> tool in favorites
+                else -> tool.category == category
+            }
     }
     Column(
         Modifier
@@ -6694,9 +6843,18 @@ private fun StackToolGrid(rawAvailable: Boolean, onTool: (StackTool) -> Unit) {
                 FilterChip(selected = item == category, onClick = { category = item }, label = { Text(stringResource(item.labelRes), fontSize = 12.sp) })
             }
         }
-        LazyVerticalGrid(
+        if (visible.isEmpty() && (category == StackToolCategory.Recent || category == StackToolCategory.Favorites)) {
+            Box(Modifier.fillMaxWidth().height(212.dp), contentAlignment = Alignment.Center) {
+                Text(
+                    stringResource(if (category == StackToolCategory.Recent) R.string.fossin_tool_recent_empty else R.string.fossin_tool_favorites_empty),
+                    color = Color(0xFFAFAFB7),
+                    textAlign = TextAlign.Center,
+                    fontSize = 13.sp,
+                )
+            }
+        } else LazyVerticalGrid(
             columns = GridCells.Fixed(4),
-            modifier = Modifier.fillMaxWidth().height(238.dp).padding(top = 8.dp),
+            modifier = Modifier.fillMaxWidth().height(212.dp).padding(top = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
@@ -6705,7 +6863,10 @@ private fun StackToolGrid(rawAvailable: Boolean, onTool: (StackTool) -> Unit) {
                     modifier = Modifier
                         .height(54.dp)
                         .clip(RoundedCornerShape(14.dp))
-                        .clickable { onTool(tool) },
+                        .combinedClickable(
+                            onClick = { onTool(tool) },
+                            onLongClick = { onToggleFavorite(tool) },
+                        ),
                     shape = RoundedCornerShape(14.dp),
                     color = Color(0xFF1A1A1E),
                 ) {
@@ -6719,10 +6880,17 @@ private fun StackToolGrid(rawAvailable: Boolean, onTool: (StackTool) -> Unit) {
                             modifier = Modifier.align(Alignment.Center).padding(horizontal = 4.dp),
                         )
                         if (tool.isNew) Text(stringResource(R.string.fossin_new), color = Color(0xFFFFC400), fontSize = 7.sp, modifier = Modifier.align(Alignment.TopEnd).padding(4.dp))
+                        if (tool in favorites) Text("★", color = Color(0xFFFFC400), fontSize = 11.sp, modifier = Modifier.align(Alignment.TopStart).padding(5.dp))
                     }
                 }
             }
         }
+        Text(
+            stringResource(R.string.fossin_tool_favorite_hint),
+            color = Color(0xFF96969F),
+            fontSize = 11.sp,
+            modifier = Modifier.padding(top = 4.dp),
+        )
     }
 }
 
@@ -6776,6 +6944,7 @@ private fun StackExportPanel(
     rawExportSize: RawExportSize,
     onRawExportSize: (RawExportSize) -> Unit,
     onExport: () -> Unit,
+    onExportPng: () -> Unit,
     onShare: () -> Unit,
     onEditablePackage: () -> Unit,
 ) {
@@ -6787,6 +6956,16 @@ private fun StackExportPanel(
             Button(onClick = onExport, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF006E51)), modifier = Modifier.weight(1f)) { Text(stringResource(R.string.fossin_export)) }
             TextButton(onClick = onShare, modifier = Modifier.weight(1f)) { Text(stringResource(R.string.share), color = Color.White) }
         }
+        TextButton(onClick = onExportPng, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+            Text(stringResource(R.string.fossin_export_png), color = Color.White, fontSize = 12.sp)
+        }
+        Text(
+            stringResource(R.string.fossin_export_png_note),
+            color = Color(0xFFA9A9AE),
+            fontSize = 10.sp,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth(),
+        )
         if (rawSource) {
             Text(
                 stringResource(R.string.fossin_raw_export_size),
@@ -6892,9 +7071,12 @@ private fun StackEditControls(
     onCancel: () -> Unit,
     onConfirm: () -> Unit,
     onAuto: () -> Unit,
+    onStepParameter: (Float) -> Unit,
     onMask: () -> Unit,
     onLayers: () -> Unit,
 ) {
+    val decreaseDescription = stringResource(R.string.fossin_decrease)
+    val increaseDescription = stringResource(R.string.fossin_increase)
     Column(Modifier.fillMaxWidth().background(Color(0xF2070708)).padding(horizontal = 12.dp, vertical = 6.dp)) {
         parameter?.let {
             Text(
@@ -6908,6 +7090,12 @@ private fun StackEditControls(
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
             TextButton(onClick = onCancel) { Text("×", color = Color.White, fontSize = 28.sp) }
             if (tool == StackTool.Tune || tool == StackTool.WhiteBalance || tool == StackTool.Hdr) TextButton(onClick = onAuto) { Text(stringResource(R.string.fossin_auto), color = Color.White) }
+            if (parameter != null) {
+                Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                    TextButton(onClick = { onStepParameter(-1f) }, modifier = Modifier.semantics { contentDescription = decreaseDescription }) { Text("−", color = Color.White, fontSize = 22.sp) }
+                    TextButton(onClick = { onStepParameter(1f) }, modifier = Modifier.semantics { contentDescription = increaseDescription }) { Text("+", color = Color.White, fontSize = 22.sp) }
+                }
+            }
             TextButton(onClick = onMask) { Text(stringResource(R.string.fossin_mask), color = Color.White) }
             TextButton(onClick = onLayers) { Text(stringResource(R.string.fossin_layers), color = Color.White) }
             TextButton(onClick = onConfirm) { Text("✓", color = Color(0xFFFFC400), fontSize = 25.sp) }
@@ -7572,6 +7760,8 @@ private fun StackLayersSheet(
     onEdit: (StackOperation) -> Unit,
     onMask: (StackOperation) -> Unit,
     onToggle: (String) -> Unit,
+    onDuplicate: (String) -> Unit,
+    onMove: (String, Int) -> Unit,
     onDelete: (String) -> Unit,
     onSaveDesign: () -> Unit,
 ) {
@@ -7597,14 +7787,28 @@ private fun StackLayersSheet(
                         }
                     }
                 }
-                operations.forEach { operation ->
+                operations.forEachIndexed { index, operation ->
                     Surface(color = Color(0xFF222227), shape = RoundedCornerShape(14.dp)) {
                         Column(Modifier.padding(12.dp)) {
-                            Text(stringResource(operation.tool.labelRes), color = Color.White, fontWeight = FontWeight.SemiBold)
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    "${index + 1}. ${stringResource(operation.tool.labelRes)}",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                TextButton(onClick = { onMove(operation.id, -1) }, enabled = index > 0) {
+                                    Text(stringResource(R.string.fossin_move_up), color = if (index > 0) Color.White else Color(0xFF66666D), fontSize = 11.sp)
+                                }
+                                TextButton(onClick = { onMove(operation.id, 1) }, enabled = index < operations.lastIndex) {
+                                    Text(stringResource(R.string.fossin_move_down), color = if (index < operations.lastIndex) Color.White else Color(0xFF66666D), fontSize = 11.sp)
+                                }
+                            }
                             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 TextButton(onClick = { onEdit(operation) }) { Text(stringResource(R.string.fossin_edit), color = Color.White, fontSize = 11.sp) }
                                 TextButton(onClick = { onMask(operation) }) { Text(stringResource(R.string.fossin_mask), color = Color.White, fontSize = 11.sp) }
                                 TextButton(onClick = { onToggle(operation.id) }) { Text(stringResource(if (operation.enabled) R.string.fossin_disable else R.string.fossin_enable), color = if (operation.enabled) Color.White else Color(0xFFA0A0A8), fontSize = 11.sp) }
+                                TextButton(onClick = { onDuplicate(operation.id) }) { Text(stringResource(R.string.fossin_duplicate), color = Color.White, fontSize = 11.sp) }
                                 TextButton(onClick = { onDelete(operation.id) }) { Text(stringResource(R.string.fossin_delete), color = Color(0xFFFF887B), fontSize = 11.sp) }
                             }
                         }
@@ -7628,6 +7832,7 @@ private fun StackEditorHall(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var projects by remember { mutableStateOf<List<StackProjectSummary>>(emptyList()) }
+    var recentPhotos by remember { mutableStateOf<List<FossinLibraryItem>>(emptyList()) }
     var cameraPhotos by remember { mutableStateOf<List<FossinLibraryItem>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
     var refresh by remember { mutableStateOf(0) }
@@ -7651,10 +7856,11 @@ private fun StackEditorHall(
                     .take(36)
                     .toList()
             }.getOrDefault(emptyList())
-            savedProjects to camera
+            Triple(savedProjects, FossinLibraryStore.entries(context).take(36), camera)
         }
         projects = library.first
-        cameraPhotos = library.second
+        recentPhotos = library.second
+        cameraPhotos = library.third
         isLoading = false
     }
     DisposableEffect(lifecycleOwner) {
@@ -7686,7 +7892,7 @@ private fun StackEditorHall(
             TextButton(onClick = onImportPackage, modifier = Modifier.align(Alignment.CenterHorizontally)) {
                 Text(stringResource(R.string.fossin_import_editable_package), color = Color(0xFFFFC400), fontSize = 12.sp)
             }
-            Text(stringResource(R.string.fossin_library_imported_edited), color = onSurface, style = MaterialTheme.typography.titleLarge)
+            Text(stringResource(R.string.fossin_library_projects), color = onSurface, style = MaterialTheme.typography.titleLarge)
             if (projects.isEmpty()) {
                 Surface(Modifier.fillMaxWidth().height(110.dp), color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(18.dp)) {
                     Text(stringResource(R.string.fossin_library_imported_empty), color = subdued, textAlign = TextAlign.Center, modifier = Modifier.padding(20.dp))
@@ -7694,6 +7900,18 @@ private fun StackEditorHall(
             } else {
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     items(projects, key = StackProjectSummary::id) { project -> StackProjectCard(project, onOpenProject) }
+                }
+            }
+            Text(stringResource(R.string.fossin_library_recent), color = onSurface, style = MaterialTheme.typography.titleLarge)
+            if (recentPhotos.isEmpty()) {
+                Surface(Modifier.fillMaxWidth().height(96.dp), color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(18.dp)) {
+                    Text(stringResource(R.string.fossin_library_imported_empty), color = subdued, textAlign = TextAlign.Center, modifier = Modifier.padding(20.dp))
+                }
+            } else {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    items(recentPhotos, key = { item -> "${item.kind}:${item.uri}" }) { item ->
+                        FossinHallPhotoCard(item = item) { onOpenCameraPhoto(item.uri) }
+                    }
                 }
             }
             Text(stringResource(R.string.fossin_library_camera_photos), color = onSurface, style = MaterialTheme.typography.titleLarge)

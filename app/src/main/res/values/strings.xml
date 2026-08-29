@@ -12,6 +12,17 @@
     <string name="fossin_library_camera_action">Take a photo</string>
     <string name="fossin_library_import_action">Choose from device</string>
     <string name="fossin_library_imported_edited">Imported &amp; edited</string>
+    <string name="fossin_library_projects">Editable projects</string>
+    <string name="fossin_library_recent">Recent imports &amp; exports</string>
+    <string name="fossin_tool_category_recent">Recent</string>
+    <string name="fossin_tool_category_favorites">Favorites</string>
+    <string name="fossin_tool_recent_empty">Use an editing tool and it will appear here.</string>
+    <string name="fossin_tool_favorite_hint">Hold a tool to add or remove it from Favorites.</string>
+    <string name="fossin_tool_favorites_empty">Hold a tool to add it to Favorites.</string>
+    <string name="fossin_decrease">Decrease</string>
+    <string name="fossin_increase">Increase</string>
+    <string name="fossin_export_png">Export PNG</string>
+    <string name="fossin_export_png_note">PNG is lossless but does not include EXIF or 360° projection data.</string>
     <string name="fossin_library_camera_photos">Camera photos</string>
     <string name="fossin_library_imported_empty">Your editable projects and exported photos will appear here.</string>
     <string name="fossin_library_camera_empty">Photos taken with this camera will appear here.</string>
@@ -1448,4 +1459,7 @@
     <string name="camera_simulation_cool">Cool</string>
     <string name="camera_simulation_vivid">Vivid</string>
     <string name="camera_simulation_mono">Mono</string>
+    <string name="fossin_duplicate">Duplicate</string>
+    <string name="fossin_move_up">Move up</string>
+    <string name="fossin_move_down">Move down</string>
 </resources>
